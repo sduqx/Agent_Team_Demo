@@ -8,7 +8,7 @@ import sys
 import time
 import json
 from pathlib import Path
-from shared_context import SharedContext, send_message, read_messages
+from shared_context import SharedContext, send_message, read_messages, extract_text_from_response
 
 try:
     from anthropic import Anthropic
@@ -56,7 +56,7 @@ def create_backend_with_llm(task_description: str) -> str:
             max_tokens=4000
         )
         
-        result_text = response.content[0].text
+        result_text = extract_text_from_response(response)
         return parse_and_save_code(result_text)
     except Exception as e:
         print(f"❌ LLM生成失败: {e}")
@@ -132,7 +132,7 @@ def main():
     print("\n等待任务分配...\n")
     
     wait_time = 0
-    max_wait = 120
+    max_wait = 300
     
     while wait_time < max_wait:
         messages = read_messages("backend")

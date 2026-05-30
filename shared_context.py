@@ -5,6 +5,28 @@ from pathlib import Path
 import threading
 from typing import Dict, Any
 
+
+def extract_text_from_response(response) -> str:
+    """
+    从LLM响应中提取文本内容（兼容 ThinkingBlock）
+    处理 Claude extended thinking 模式：响应中可能包含 ThinkingBlock 和 TextBlock，
+    ThinkingBlock 有 .thinking 属性但没有 .text 属性，需要过滤掉。
+    """
+    text_parts = []
+
+    if hasattr(response.content, '__iter__'):
+        for block in response.content:
+            # 跳过 thinking block（extended thinking 模式）
+            if hasattr(block, 'type') and block.type == 'thinking':
+                continue
+            # 提取文本
+            if hasattr(block, 'text'):
+                text_parts.append(block.text)
+    else:
+        return str(response.content)
+
+    return "".join(text_parts)
+
 TEAM_DIR = Path.cwd() / ".team"
 SHARED_DIR = TEAM_DIR / "shared"
 INBOX_DIR = TEAM_DIR / "inbox"
