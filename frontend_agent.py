@@ -1,241 +1,160 @@
 #!/usr/bin/env python3
 """
-Frontend Agent - 前端开发Agent
+Frontend Agent - 前端开发Agent，使用LLM生成UI代码
+权限: 可以读写项目文件、创建HTML/CSS/JS
 """
 
 import sys
 import time
+import json
 from pathlib import Path
 from shared_context import SharedContext, send_message, read_messages
+
+try:
+    from anthropic import Anthropic
+    from dotenv import load_dotenv
+    import os
+    load_dotenv(override=True)
+    client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
+    MODEL = os.environ["MODEL_ID"]
+except:
+    client = None
+    MODEL = None
 
 context = SharedContext()
 PROJECT_DIR = Path.cwd() / ".project"
 PROJECT_DIR.mkdir(exist_ok=True)
 
 
-def create_html_ui():
-    """创建HTML界面"""
+def create_frontend_with_llm(task_description: str) -> str:
+    """使用LLM生成前端代码"""
     
-    html_code = '''<!DOCTYPE html>
+    if client is None:
+        return create_default_frontend()
+    
+    # 获取后端规范
+    backend_spec = context.project_data.get("backend_spec", {})
+    backend_info = f"\n后端信息: {json.dumps(backend_spec, ensure_ascii=False)}"
+    
+    prompt = f"""
+你是一个前端开发工程师。根据以下需求生成完整的HTML前端应用：
+
+需求: {task_description}
+{backend_info}
+
+请生成一个单页面HTML应用（包含在```html```代码块中），包括：
+1. 美观的UI设计
+2. 与后端API的集成（使用Fetch API）
+3. 错误处理和加载状态
+4. 响应式设计
+5. 所有CSS和JavaScript都内嵌在HTML中
+
+代码应该是可以直接在浏览器中打开运行的。
+"""
+    
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=4000
+        )
+        
+        result_text = response.content[0].text
+        return parse_and_save_html(result_text)
+    except Exception as e:
+        print(f"❌ LLM生成失败: {e}")
+        return create_default_frontend()
+
+
+def parse_and_save_html(response_text: str) -> str:
+    """从LLM响应中提取HTML并保存"""
+    import re
+    
+    html_match = re.search(r'```html\n(.*?)\n```', response_text, re.DOTALL)
+    if html_match:
+        html_code = html_match.group(1)
+    else:
+        html_code = create_default_html_code()
+    
+    (PROJECT_DIR / "index.html").write_text(html_code, encoding='utf-8')
+    return "HTML前端已生成"
+
+
+def create_default_html_code() -> str:
+    """默认HTML前端代码"""
+    return '''<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>TODO 应用</title>
+    <title>应用</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 20px;
-        }
-        .container { 
-            max-width: 800px; 
-            width: 100%;
-            background: white; 
-            padding: 30px; 
-            border-radius: 12px; 
-            box-shadow: 0 10px 40px rgba(0,0,0,0.2); 
-        }
-        h1 { 
-            color: #333; 
-            margin-bottom: 30px; 
-            text-align: center;
-            font-size: 2.5em;
-        }
-        .input-group { 
-            display: flex; 
-            gap: 10px; 
-            margin-bottom: 30px; 
-        }
-        input { 
-            flex: 1; 
-            padding: 12px 15px; 
-            border: 2px solid #ddd; 
-            border-radius: 8px; 
-            font-size: 1em;
-            transition: border-color 0.3s;
-        }
-        input:focus { 
-            outline: none; 
-            border-color: #667eea;
-        }
-        button { 
-            padding: 12px 30px; 
-            background: #667eea; 
-            color: white; 
-            border: none; 
-            border-radius: 8px; 
-            cursor: pointer; 
-            font-size: 1em;
-            font-weight: bold;
-            transition: background 0.3s;
-        }
-        button:hover { 
-            background: #764ba2; 
-        }
-        .todo-list { 
-            list-style: none; 
-        }
-        .todo-item { 
-            display: flex; 
-            align-items: center; 
-            padding: 15px; 
-            border: 1px solid #eee; 
-            margin-bottom: 10px; 
-            border-radius: 8px; 
-            background: #f9f9f9;
-            transition: all 0.3s;
-        }
-        .todo-item:hover { 
-            background: #f0f0f0; 
-        }
-        .todo-item input[type="checkbox"] { 
-            margin-right: 15px; 
-            width: 20px;
-            height: 20px;
-            cursor: pointer;
-        }
-        .todo-item.completed { 
-            opacity: 0.6; 
-            text-decoration: line-through; 
-        }
-        .todo-text {
-            flex: 1;
-        }
-        .delete-btn { 
-            margin-left: 15px; 
-            background: #dc3545; 
-            padding: 8px 15px; 
-            font-size: 0.9em;
-        }
-        .delete-btn:hover { 
-            background: #c82333; 
-        }
-        .empty-state {
-            text-align: center;
-            color: #999;
-            padding: 40px 20px;
-        }
+        body { font-family: Arial; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; display: flex; justify-content: center; align-items: center; padding: 20px; }
+        .container { max-width: 800px; width: 100%; background: white; padding: 30px; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); }
+        h1 { color: #333; margin-bottom: 30px; text-align: center; }
+        .input-group { display: flex; gap: 10px; margin-bottom: 30px; }
+        input { flex: 1; padding: 12px; border: 2px solid #ddd; border-radius: 8px; }
+        button { padding: 12px 30px; background: #667eea; color: white; border: none; border-radius: 8px; cursor: pointer; }
+        button:hover { background: #764ba2; }
+        .item { padding: 15px; border: 1px solid #eee; margin-bottom: 10px; border-radius: 8px; }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>📝 我的TODO清单</h1>
+        <h1>应用</h1>
         <div class="input-group">
-            <input type="text" id="todoInput" placeholder="输入新任务..." autocomplete="off">
-            <button onclick="addTodo()">➕ 添加</button>
+            <input type="text" id="input" placeholder="输入内容...">
+            <button onclick="submit()">提交</button>
         </div>
-        <ul class="todo-list" id="todoList"></ul>
-        <div class="empty-state" id="emptyState">暂无任务，开始添加吧！</div>
+        <div id="list"></div>
     </div>
-    
     <script>
-        const API_URL = 'http://localhost:5000/api/todos';
-        const todoInput = document.getElementById('todoInput');
+        const API_URL = 'http://localhost:5000/api/data';
         
-        async function loadTodos() {
+        async function loadData() {
             try {
                 const response = await fetch(API_URL);
-                const todos = await response.json();
-                renderTodos(todos);
+                const data = await response.json();
+                document.getElementById('list').innerHTML = Object.values(data).map(item => 
+                    `<div class="item">${JSON.stringify(item)}</div>`
+                ).join('');
             } catch(e) {
-                console.log('❌ 后端未连接，使用离线模式');
-                renderEmpty();
+                console.error('Error:', e);
             }
         }
         
-        function renderTodos(todos) {
-            const list = document.getElementById('todoList');
-            const empty = document.getElementById('emptyState');
-            
-            if (todos.length === 0) {
-                list.innerHTML = '';
-                empty.style.display = 'block';
-                return;
-            }
-            
-            empty.style.display = 'none';
-            list.innerHTML = todos.map(todo => `
-                <li class="todo-item ${todo.completed ? 'completed' : ''}">
-                    <input type="checkbox" ${todo.completed ? 'checked' : ''} 
-                           onchange="toggleTodo(${todo.id}, this.checked)">
-                    <span class="todo-text">${escapeHtml(todo.title)}</span>
-                    <button class="delete-btn" onclick="deleteTodo(${todo.id})">🗑️ 删除</button>
-                </li>
-            `).join('');
-        }
-        
-        function renderEmpty() {
-            document.getElementById('todoList').innerHTML = '';
-            document.getElementById('emptyState').style.display = 'block';
-        }
-        
-        async function addTodo() {
-            const title = todoInput.value.trim();
-            if (!title) return;
-            
+        async function submit() {
+            const input = document.getElementById('input');
             try {
                 await fetch(API_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ title })
+                    body: JSON.stringify({ content: input.value })
                 });
+                input.value = '';
+                loadData();
             } catch(e) {
-                console.log('离线模式');
+                console.error('Error:', e);
             }
-            
-            todoInput.value = '';
-            loadTodos();
         }
         
-        async function toggleTodo(id, completed) {
-            try {
-                await fetch(API_URL + '/' + id, {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ completed })
-                });
-            } catch(e) {}
-            loadTodos();
-        }
-        
-        async function deleteTodo(id) {
-            try {
-                await fetch(API_URL + '/' + id, { method: 'DELETE' });
-            } catch(e) {}
-            loadTodos();
-        }
-        
-        function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
-        }
-        
-        todoInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') addTodo();
-        });
-        
-        loadTodos();
-        setInterval(loadTodos, 3000);
+        loadData();
     </script>
 </body>
-</html>
-'''
-    
-    (PROJECT_DIR / "index.html").write_text(html_code, encoding='utf-8')
-    return "HTML UI已创建 (index.html)"
+</html>'''
+
+
+def create_default_frontend() -> str:
+    """创建默认前端"""
+    (PROJECT_DIR / "index.html").write_text(create_default_html_code(), encoding='utf-8')
+    return "默认HTML前端已创建"
 
 
 def main():
-    print("=" * 70)
-    print("🎨 Frontend Agent 已启动")
-    print("=" * 70)
+    print("="*70)
+    print("🎨 Frontend Agent 已启动 (LLM驱动)")
+    print("="*70)
     print("\n等待任务分配...\n")
     
     wait_time = 0
@@ -247,10 +166,10 @@ def main():
         if messages:
             for msg in messages:
                 print(f"\n📋 收到任务来自 {msg['from']}:")
-                print(f"   {msg['content']}\n")
+                print(f"   {msg['content'][:100]}...\n")
                 
-                print("🎨 正在创建前端界面...")
-                result = create_html_ui()
+                print("🤖 Frontend Agent 使用LLM生成代码...")
+                result = create_frontend_with_llm(msg['content'])
                 print(f"✓ {result}\n")
                 
                 context.update_task("frontend", "completed", result)
@@ -263,7 +182,7 @@ def main():
         time.sleep(1)
     
     if wait_time >= max_wait:
-        print(f"⚠️  等待超时({max_wait}秒)，未收到任务")
+        print(f"⚠️ 等待超时({max_wait}秒)，未收到任务")
 
 
 if __name__ == "__main__":

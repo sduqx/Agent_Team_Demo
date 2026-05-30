@@ -1,8 +1,4 @@
-"""
-共享上下文模块 - 所有Agent共享的全局状态
-
-用于Agent间通信和状态同步
-"""
+"""共享上下文模块 - 所有Agent共享的全局状态"""
 
 import json
 from pathlib import Path
@@ -12,8 +8,9 @@ from typing import Dict, Any
 TEAM_DIR = Path.cwd() / ".team"
 SHARED_DIR = TEAM_DIR / "shared"
 INBOX_DIR = TEAM_DIR / "inbox"
+SKILLS_DIR = Path.cwd() / "skills"
 
-for d in [TEAM_DIR, SHARED_DIR, INBOX_DIR]:
+for d in [TEAM_DIR, SHARED_DIR, INBOX_DIR, SKILLS_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
 
@@ -33,6 +30,7 @@ class SharedContext:
             "name": "Untitled Project",
             "description": "",
             "status": "pending",
+            "backend_spec": {},  # Backend规范供其他Agent参考
             "tasks": {
                 "backend": {"status": "pending", "output": ""},
                 "frontend": {"status": "pending", "output": ""},
@@ -61,6 +59,12 @@ class SharedContext:
             self.project_data["name"] = name
             self.project_data["description"] = description
             self.project_data["status"] = "in_progress"
+            self.save_project()
+    
+    def update_backend_spec(self, spec: dict):
+        """更新后端规范供其他Agent参考"""
+        with self._lock:
+            self.project_data["backend_spec"] = spec
             self.save_project()
     
     def get_status(self) -> str:

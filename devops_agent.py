@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-DevOps Agent - 部署和文档Agent
+DevOps Agent - 部署和文档Agent，使用LLM生成配置
+权限: 可以读写项目文件、创建部署配置
 """
 
 import sys
@@ -8,17 +9,99 @@ import time
 from pathlib import Path
 from shared_context import SharedContext, send_message, read_messages
 
+try:
+    from anthropic import Anthropic
+    from dotenv import load_dotenv
+    import os
+    load_dotenv(override=True)
+    client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
+    MODEL = os.environ["MODEL_ID"]
+except:
+    client = None
+    MODEL = None
+
 context = SharedContext()
 PROJECT_DIR = Path.cwd() / ".project"
 PROJECT_DIR.mkdir(exist_ok=True)
 
 
-def create_deployment_files():
-    """创建部署文件"""
+def create_deployment_with_llm(task_description: str) -> str:
+    """使用LLM生成部署配置"""
     
-    readme = '''# TODO 应用
+    if client is None:
+        return create_default_deployment()
+    
+    prompt = f"""
+你是一个DevOps工程师。根据以下需求生成完整的部署配置和文档：
 
-一个简单的TODO管理应用，采用Flask后端 + HTML前端。
+需求: {task_description}
+
+请生成：
+1. README.md - 完整的项目文档（markdown格式）
+   - 项目描述
+   - 快速开始指南
+   - API文档
+   - 部署说明
+
+2. Dockerfile - Docker容器配置
+
+3. docker-compose.yml - Docker Compose配置
+
+4. .dockerignore - Docker忽略文件
+
+返回格式: 在```markdown```、```dockerfile```等代码块中分别返回各个文件内容
+"""
+    
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=4000
+        )
+        
+        result_text = response.content[0].text
+        return parse_and_save_deployment(result_text)
+    except Exception as e:
+        print(f"❌ LLM生成失败: {e}")
+        return create_default_deployment()
+
+
+def parse_and_save_deployment(response_text: str) -> str:
+    """从LLM响应中提取并保存部署配置"""
+    import re
+    
+    # 提取README
+    readme_match = re.search(r'```markdown\n(.*?)\n```', response_text, re.DOTALL)
+    if readme_match:
+        readme = readme_match.group(1)
+    else:
+        readme = create_default_readme()
+    (PROJECT_DIR / "README.md").write_text(readme, encoding='utf-8')
+    
+    # 提取Dockerfile
+    docker_match = re.search(r'```dockerfile\n(.*?)\n```', response_text, re.DOTALL)
+    if docker_match:
+        dockerfile = docker_match.group(1)
+    else:
+        dockerfile = create_default_dockerfile()
+    (PROJECT_DIR / "Dockerfile").write_text(dockerfile, encoding='utf-8')
+    
+    # 提取docker-compose
+    compose_match = re.search(r'```yaml\n(.*?)\n```', response_text, re.DOTALL)
+    if compose_match:
+        compose = compose_match.group(1)
+    else:
+        compose = create_default_docker_compose()
+    (PROJECT_DIR / "docker-compose.yml").write_text(compose, encoding='utf-8')
+    
+    return "部署配置已生成"
+
+
+def create_default_readme() -> str:
+    """默认README"""
+    return '''# 项目应用
+
+一个使用Flask + HTML的完整应用。
 
 ## 快速开始
 
@@ -32,94 +115,31 @@ pip install -r requirements.txt
 python app.py
 ```
 
-后端将在 http://localhost:5000 运行
-
 ### 3. 打开前端
-在浏览器中打开 `index.html` 即可使用应用
-
-## 项目结构
-```
-.
-├── app.py              # Flask后端应用
-├── index.html          # 前端HTML界面
-├── requirements.txt    # Python依赖
-├── config.py          # 配置文件
-├── README.md          # 本文件
-├── Dockerfile         # Docker配置
-├── docker-compose.yml # Docker Compose配置
-└── tests/             # 测试目录
-    └── test_basic.py  # 基础测试
-```
+在浏览器中打开 `index.html` 即可使用应用。
 
 ## API 文档
 
-### GET /api/todos
-获取所有TODO项
+### GET /api/health
+检查服务健康状态
 
-**响应:**
-```json
-[
-  {"id": 1, "title": "任务名称", "completed": false}
-]
-```
+### GET /api/data
+获取所有数据
 
-### POST /api/todos
-创建新的TODO项
-
-**请求体:**
-```json
-{"title": "新任务"}
-```
-
-### PUT /api/todos/<id>
-更新TODO项
-
-**请求体:**
-```json
-{"completed": true, "title": "更新的标题"}
-```
-
-### DELETE /api/todos/<id>
-删除TODO项
-
-## 运行测试
-```bash
-python -m pytest tests/ -v
-# 或
-python tests/test_basic.py
-```
+### POST /api/data
+创建新数据项
 
 ## Docker部署
 
-### 构建镜像
-```bash
-docker build -t todo-app .
-```
-
-### 运行容器
-```bash
-docker run -p 5000:5000 todo-app
-```
-
-### 使用 Docker Compose
 ```bash
 docker-compose up
 ```
-
-## 技术栈
-
-- **后端**: Flask (Python)
-- **前端**: HTML5 + CSS3 + JavaScript
-- **数据交互**: RESTful API + Fetch API
-- **部署**: Docker
-- **测试**: unittest
-
-## 许可证
-
-MIT License
 '''
-    
-    dockerfile = '''FROM python:3.10-slim
+
+
+def create_default_dockerfile() -> str:
+    """默认Dockerfile"""
+    return '''FROM python:3.10-slim
 
 WORKDIR /app
 
@@ -132,8 +152,11 @@ EXPOSE 5000
 
 CMD ["python", "app.py"]
 '''
-    
-    docker_compose = '''version: '3.8'
+
+
+def create_default_docker_compose() -> str:
+    """默认docker-compose.yml"""
+    return '''version: '3.8'
 
 services:
   web:
@@ -145,18 +168,20 @@ services:
     volumes:
       - .:/app
 '''
-    
-    (PROJECT_DIR / "README.md").write_text(readme, encoding='utf-8')
-    (PROJECT_DIR / "Dockerfile").write_text(dockerfile, encoding='utf-8')
-    (PROJECT_DIR / "docker-compose.yml").write_text(docker_compose, encoding='utf-8')
-    
-    return "部署文件已创建 (README.md, Dockerfile, docker-compose.yml)"
+
+
+def create_default_deployment() -> str:
+    """创建默认部署配置"""
+    (PROJECT_DIR / "README.md").write_text(create_default_readme(), encoding='utf-8')
+    (PROJECT_DIR / "Dockerfile").write_text(create_default_dockerfile(), encoding='utf-8')
+    (PROJECT_DIR / "docker-compose.yml").write_text(create_default_docker_compose(), encoding='utf-8')
+    return "默认部署配置已创建"
 
 
 def main():
-    print("=" * 70)
-    print("📦 DevOps Agent 已启动")
-    print("=" * 70)
+    print("="*70)
+    print("📦 DevOps Agent 已启动 (LLM驱动)")
+    print("="*70)
     print("\n等待任务分配...\n")
     
     wait_time = 0
@@ -168,10 +193,10 @@ def main():
         if messages:
             for msg in messages:
                 print(f"\n📋 收到任务来自 {msg['from']}:")
-                print(f"   {msg['content']}\n")
+                print(f"   {msg['content'][:100]}...\n")
                 
-                print("📦 正在创建部署配置...")
-                result = create_deployment_files()
+                print("🤖 DevOps Agent 使用LLM生成配置...")
+                result = create_deployment_with_llm(msg['content'])
                 print(f"✓ {result}\n")
                 
                 context.update_task("devops", "completed", result)
@@ -184,7 +209,7 @@ def main():
         time.sleep(1)
     
     if wait_time >= max_wait:
-        print(f"⚠️  等待超时({max_wait}秒)，未收到任务")
+        print(f"⚠️ 等待超时({max_wait}秒)，未收到任务")
 
 
 if __name__ == "__main__":
