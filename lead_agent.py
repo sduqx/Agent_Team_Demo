@@ -52,7 +52,7 @@ def main():
                     time.sleep(0.5)
                 
                 context.set_project("Demo Project", requirement)
-                print("\n✓ 所有任务已分配！\n")
+                print("\n✓ 所有任务已分配!\n")
         
         # 定期打印状态
         if iteration % 5 == 0:
