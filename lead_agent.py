@@ -59,9 +59,9 @@ def analyze_requirement_with_llm(requirement: str) -> dict:
 请深入分析需求，并为 Team 创建带依赖关系的任务计划。任务必须遵守严格的依赖顺序：
 
 **依赖规则：**
-- backend 最先执行（无依赖），需要定义完整的 API 接口规范（包括端点、请求/响应格式）
-- frontend 依赖 backend（需要知道 API 端点才能对接）
-- test 依赖 backend（需要知道 API 端点才能编写测试）
+- backend 最先执行（无依赖），需要设计完整的 API 契约（包含每个端点的 request_body schema 和 response body schema）
+- frontend 依赖 backend（需要知道 API 端点+字段 schema 才能对接）
+- test 依赖 backend（需要知道 API 端点+字段 schema 才能编写测试）
 - devops 最后执行（依赖 frontend 和 test 都完成）
 
 **返回JSON格式：**
@@ -77,8 +77,8 @@ def analyze_requirement_with_llm(requirement: str) -> dict:
 
 注意:
 - description 中要包含足够的技术细节，让 Agent 可以独立工作
-- backend 的 description 中请 明确列出所有 API 端点和数据格式
-- frontend 的 description 中说明需要对接后端 API
+- **backend 的 description 必须明确列出所有 API 端点的 path、method、request_body 字段名及类型、response body 结构**，这是前后端一致性的关键契约！
+- frontend 的 description 中说明需要严格按后端 API 契约对接（路径、字段名、响应结构）
 - 只返回JSON，不要其他文字
 """
 
@@ -115,19 +115,43 @@ def _default_analysis(requirement: str) -> dict:
             {
                 "role": "backend",
                 "subject": "创建Flask REST API",
-                "description": f"使用Flask创建REST API: {requirement}\n\n要求:\n- 数据模型定义清晰\n- 包含 CRUD 端点\n- 返回结构化 JSON\n- 启用 CORS",
+                "description": (
+                    f"使用Flask创建REST API: {requirement}\n\n"
+                    "要求:\n"
+                    "- 数据模型定义清晰\n"
+                    "- 包含 CRUD 端点\n"
+                    "- 返回结构化 JSON\n"
+                    "- 启用 CORS\n"
+                    "- **API 规范必须包含 request_body 和 response body 的完整字段 schema**\n"
+                    "  格式示例: {{\"title\": \"string\", \"content\": \"string\"}}\n"
+                    "- 先生成 API 规范 JSON，再生成 Flask 代码"
+                ),
                 "depends_on": []
             },
             {
                 "role": "frontend",
                 "subject": "创建前端界面",
-                "description": f"创建单页面HTML应用: {requirement}\n\n要求:\n- 美观的 UI 设计\n- 对接后端 API（参考 API spec）\n- 响应式布局\n- 错误处理和加载状态",
+                "description": (
+                    f"创建单页面HTML应用: {requirement}\n\n"
+                    "要求:\n"
+                    "- 美观的 UI 设计\n"
+                    "- **严格按后端 API 契约对接：路径、POST 请求体字段名、GET 响应结构**\n"
+                    "- 响应式布局\n"
+                    "- 错误处理和加载状态"
+                ),
                 "depends_on": ["backend"]
             },
             {
                 "role": "test",
                 "subject": "编写API测试",
-                "description": f"为后端API编写测试: {requirement}\n\n要求:\n- 使用pytest\n- 覆盖所有端点\n- 包含正常和异常场景",
+                "description": (
+                    f"为后端API编写测试: {requirement}\n\n"
+                    "要求:\n"
+                    "- 使用pytest\n"
+                    "- **POST 测试数据必须使用 API 规范的 request_body 字段名**\n"
+                    "- 覆盖所有端点\n"
+                    "- 包含正常和异常场景"
+                ),
                 "depends_on": ["backend"]
             },
             {
@@ -198,16 +222,51 @@ def dispatch_ready_tasks(role_to_id: dict, dispatched: set):
     return newly_dispatched
 
 
+def _process_requirement(requirement: str, role_to_id: dict, dispatched: set):
+    """处理需求：LLM 分析 → 创建任务图 → 分配就绪任务"""
+    print(f"\n🤖 Lead Agent 使用 LLM 分析需求...")
+    analysis = analyze_requirement_with_llm(requirement)
+    project_name = analysis.get("project_name", requirement[:50])
+
+    TASK_MGR.set_project(project_name, requirement)
+    print(f"\n📁 项目: {project_name}")
+
+    print(f"\n📊 创建任务依赖图:")
+    new_role_to_id = create_task_graph(analysis)
+
+    print(f"\n📋 当前任务状态:")
+    print(TASK_MGR.list_all())
+    print()
+
+    # 立即分配第一批就绪任务（backend）
+    dispatch_ready_tasks(new_role_to_id, dispatched)
+
+    return new_role_to_id
+
+
 def main():
     print("=" * 70)
-    print("👔 Lead Agent v2.0 - 任务依赖图驱动")
+    print("👔 Lead Agent v2.1 - 任务依赖图驱动")
     print("=" * 70)
-    print("\n等待需求输入...\n")
+
+    # ── 支持直接在 Lead 窗口输入需求 ──
+    print("\n💡 提示: 你可以直接在此窗口输入项目需求，或使用 send_requirement.py 发送\n")
+    try:
+        user_input = input("📝 请输入你的项目需求（直接回车则等待外部消息）: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        user_input = ""
 
     role_to_id = {}
     dispatched = set()
     iteration = 0
     all_completed_reported = False
+
+    # 如果用户在窗口直接输入了需求，立即处理
+    if user_input:
+        role_to_id = _process_requirement(user_input, role_to_id, dispatched)
+        print("\n⏳ 等待 Agent 完成工作...\n")
+    else:
+        print("\n⏳ 等待外部需求输入（可通过 send_requirement.py 发送）...\n")
 
     while True:
         iteration += 1
@@ -225,24 +284,7 @@ def main():
             # 收到需求 → LLM 分析 → 创建任务图
             if sender == "system" and "requirement:" in content.lower():
                 requirement = content.replace("requirement:", "").strip()
-                project_name = requirement[:50]
-
-                print(f"\n🤖 Lead Agent 使用 LLM 分析需求...")
-                analysis = analyze_requirement_with_llm(requirement)
-                project_name = analysis.get("project_name", project_name)
-
-                TASK_MGR.set_project(project_name, requirement)
-                print(f"\n📁 项目: {project_name}")
-
-                print(f"\n📊 创建任务依赖图:")
-                role_to_id = create_task_graph(analysis)
-
-                print(f"\n📋 当前任务状态:")
-                print(TASK_MGR.list_all())
-                print()
-
-                # 立即分配第一批就绪任务（backend）
-                dispatch_ready_tasks(role_to_id, dispatched)
+                role_to_id = _process_requirement(requirement, role_to_id, dispatched)
 
             # 子 Agent 完成汇报
             elif sender in ("backend", "frontend", "test", "devops"):

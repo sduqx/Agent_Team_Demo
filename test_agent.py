@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
-Test Agent v2.0 - 测试Agent
+Test Agent v2.1 - 测试Agent
 核心改进:
   1. 等待后端 API spec 就绪后才生成测试
   2. 测试内容精确匹配后端 API 端点
   3. 不再猜测端点，直接使用 APISpecStore 中的数据
+  4. 默认测试代码根据 request_body schema 生成正确的测试数据
 """
 
 import sys
@@ -57,7 +58,9 @@ def create_tests_with_llm(task_description: str, api_spec: dict) -> str:
 - 测试错误处理（404, 参数校验失败等）
 - 每个测试函数有清晰的 docstring
 
-**重要**: 所有测试用例的端点路径和方法必须与上述 API 规范完全一致！
+**重要**: 
+- 所有测试用例的端点路径和方法必须与上述 API 规范完全一致！
+- POST/PUT 请求体的字段名和类型必须与 API 规范的 request_body.properties 完全一致！
 """
 
     try:
@@ -89,12 +92,38 @@ def save_test(test_code: str):
     (tests_dir / "test_api.py").write_text(test_code, encoding='utf-8')
 
 
+def _generate_test_payload(endpoint: dict) -> dict:
+    """根据 API spec 的 request_body schema 生成正确的测试数据"""
+    req_body = endpoint.get("request_body", {})
+    req_properties = req_body.get("properties", {})
+
+    if not req_properties:
+        return {"content": "test data"}
+
+    payload = {}
+    for fname, finfo in req_properties.items():
+        ft = finfo.get("type", "string")
+        if ft in ("integer", "number"):
+            payload[fname] = 1
+        elif ft == "boolean":
+            payload[fname] = True
+        elif ft == "array":
+            payload[fname] = []
+        elif ft == "object":
+            payload[fname] = {}
+        else:
+            # string or unknown → use field name as test value
+            desc = finfo.get("description", fname)
+            payload[fname] = f"test_{fname}"
+    return payload
+
+
 def create_default_test_code(api_spec: dict) -> str:
-    """根据 API spec 动态生成默认测试代码"""
+    """根据 API spec 动态生成默认测试代码 —— 请求体字段来自 schema"""
     base_url = api_spec.get("base_url", "http://localhost:5000")
     endpoints = api_spec.get("endpoints", [])
 
-    # 生成测试端点列表
+    # 生成测试方法
     test_methods = []
     for ep in endpoints:
         method = ep.get("method", "GET")
@@ -108,12 +137,22 @@ def create_default_test_code(api_spec: dict) -> str:
         """{desc}"""
         response = requests.get(f"{{BASE_URL}}{path}")
         self.assertIn(response.status_code, [200, 201])''')
-        elif method == "POST":
+        elif method in ("POST", "PUT", "PATCH"):
+            # 根据 schema 生成正确的测试数据
+            payload = _generate_test_payload(ep)
+            payload_str = json.dumps(payload)
             test_methods.append(f'''
     def test_{safe_name.lower()}(self):
         """{desc}"""
-        response = requests.post(f"{{BASE_URL}}{path}", json={{"test": "data"}})
+        payload = {payload_str}
+        response = requests.{method.lower()}(f"{{BASE_URL}}{path}", json=payload)
         self.assertIn(response.status_code, [200, 201, 400])''')
+        elif method == "DELETE":
+            test_methods.append(f'''
+    def test_{safe_name.lower()}(self):
+        """{desc}"""
+        response = requests.delete(f"{{BASE_URL}}{path}")
+        self.assertIn(response.status_code, [200, 201, 204, 404])''')
 
     tests_body = "\n".join(test_methods) if test_methods else '''
     def test_health(self):
@@ -148,9 +187,16 @@ def create_default_tests(api_spec: dict) -> str:
 
 def main():
     print("=" * 70)
-    print("🧪 Test Agent v2.0 - 等待 API spec 后生成测试")
+    print("🧪 Test Agent v2.1 - 等待 API spec 后生成测试")
     print("=" * 70)
-    print("\n等待 Lead Agent 分配任务（后端 API 就绪后才会收到）...\n")
+
+    # 检查 LLM 状态
+    if client is None:
+        print("⚠️ LLM 客户端不可用，将使用动态默认测试\n")
+    else:
+        print("✓ LLM 客户端已就绪\n")
+
+    print("等待 Lead Agent 分配任务（后端 API 就绪后才会收到）...\n")
 
     wait_time = 0
     max_wait = 600
@@ -159,54 +205,59 @@ def main():
         messages = BUS.read_inbox("test")
 
         for msg in messages:
-            msg_type = msg.get("type", "")
-            sender = msg.get("from", "")
+            try:
+                msg_type = msg.get("type", "")
+                sender = msg.get("from", "")
 
-            # 收到后端 API 规范
-            if msg_type == "api_spec" and sender == "backend":
-                print(f"\n📡 收到后端 API 规范:")
-                print(f"   {msg['content']}\n")
+                # 收到后端 API 规范
+                if msg_type == "api_spec" and sender == "backend":
+                    print(f"\n📡 收到后端 API 规范:")
+                    print(f"   {msg['content']}\n")
 
-            # 收到 Lead 分配的任务
-            if msg_type == "task" and sender == "lead":
-                task_id = msg.get("extra", {}).get("task_id", "?")
-                task_content = msg.get("content", "")
+                # 收到 Lead 分配的任务
+                if msg_type == "task" and sender == "lead":
+                    task_id = msg.get("extra", {}).get("task_id", "?")
+                    task_content = msg.get("content", "")
 
-                print(f"\n📋 收到任务 #{task_id} 来自 Lead:")
-                print(f"   {task_content[:100]}...\n")
+                    print(f"\n📋 收到任务 #{task_id} 来自 Lead:")
+                    print(f"   {task_content[:100]}...\n")
 
-                # 从共享存储获取 API spec
-                print("🔍 正在获取后端 API 规范...")
-                api_spec = API_SPEC.wait_for_spec(timeout=60)
+                    # 从共享存储获取 API spec
+                    print("🔍 正在获取后端 API 规范...")
+                    api_spec = API_SPEC.wait_for_spec(timeout=60)
 
-                if api_spec:
-                    print(f"✓ API 规范已获取: {len(api_spec.get('endpoints', []))} 个端点")
-                else:
-                    print("⚠️ 等待 API 规范超时，使用默认值\n")
-                    api_spec = {
-                        "base_url": "http://localhost:5000",
-                        "endpoints": [
-                            {"method": "GET", "path": "/api/health"},
-                            {"method": "GET", "path": "/api/data"},
-                            {"method": "POST", "path": "/api/data"},
-                        ]
-                    }
+                    if api_spec:
+                        print(f"✓ API 规范已获取: {len(api_spec.get('endpoints', []))} 个端点")
+                    else:
+                        print("⚠️ 等待 API 规范超时，使用默认值\n")
+                        api_spec = {
+                            "base_url": "http://localhost:5000",
+                            "endpoints": [
+                                {"method": "GET", "path": "/api/health"},
+                                {"method": "GET", "path": "/api/data"},
+                                {"method": "POST", "path": "/api/data"},
+                            ]
+                        }
 
-                print("🤖 Test Agent 使用 LLM 生成测试代码（匹配后端 API）...")
-                result = create_tests_with_llm(task_content, api_spec)
-                print(f"✓ {result}\n")
+                    print("🤖 Test Agent 使用 LLM 生成测试代码（匹配后端 API）...")
+                    result = create_tests_with_llm(task_content, api_spec)
+                    print(f"✓ {result}\n")
 
-                BUS.send(
-                    sender="test",
-                    to="lead",
-                    content=f"测试完成: {result}",
-                    msg_type="status",
-                    extra={"task_id": task_id}
-                )
-                print("✓ 已通知 Lead Agent\n")
+                    BUS.send(
+                        sender="test",
+                        to="lead",
+                        content=f"测试完成: {result}",
+                        msg_type="status",
+                        extra={"task_id": task_id}
+                    )
+                    print("✓ 已通知 Lead Agent\n")
 
-                wait_time = max_wait
-                break
+                    wait_time = max_wait
+                    break
+            except Exception as e:
+                print(f"❌ 处理消息时出错: {e}")
+                import traceback
+                traceback.print_exc()
 
         wait_time += 1
         time.sleep(1)
