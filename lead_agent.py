@@ -1,328 +1,267 @@
 #!/usr/bin/env python3
 """
-Lead Agent v2.0 - 主控Agent，任务依赖图驱动
-核心改进:
-  1. 使用 LLM 分析需求 → 生成带依赖关系的任务图
-  2. 按依赖顺序分配: Backend → Frontend/Test → DevOps
-  3. 通过 APISpecStore 确保 API 一致性
-  4. 监控全流程，依赖自动解锁
+Lead Agent v4.0 — 主控 Agent，ReAct 循环 + 管理类 Tools
+核心改进：
+  1. 移除 analyze_requirement（内嵌 LLM 调用），任务分析由 ReAct 中的 LLM 直接完成
+  2. 保留 create_and_link_tasks / dispatch_ready_tasks / mark_task_done / check_all_tasks（操作型工具）
+  3. 监控阶段继续使用 run() 中的事件循环（读收件箱 → 标记完成 → 分派下一批）
 """
 
 import sys
 import time
 import json
-from pathlib import Path
-from shared_context import (
-    TASK_MGR, BUS, API_SPEC,
-    send_message, read_messages, extract_text_from_response
-)
-
-try:
-    from anthropic import Anthropic
-    from dotenv import load_dotenv
-    import os
-
-    load_dotenv(override=True)
-    client = Anthropic(base_url=os.getenv("ANTHROPIC_BASE_URL"))
-    MODEL = os.environ["MODEL_ID"]
-except:
-    print("⚠️ Anthropic 库未安装或未配置")
-    client = None
-    MODEL = None
-
-PROJECT_DIR = Path.cwd() / ".project"
-PROJECT_DIR.mkdir(exist_ok=True)
+from agent_base import BaseAgent, LLM_AVAILABLE
+from shared_context import TASK_MGR, BUS
 
 
-def analyze_requirement_with_llm(requirement: str) -> dict:
-    """
-    使用 LLM 分析需求，生成带依赖关系的任务分配。
-    返回格式:
-    {
-        "project_name": "项目名称",
-        "tasks": [
-            {"role": "backend", "subject": "...", "description": "...", "depends_on": []},
-            {"role": "frontend", "subject": "...", "description": "...", "depends_on": ["backend"]},
-            {"role": "test", "subject": "...", "description": "...", "depends_on": ["backend"]},
-            {"role": "devops", "subject": "...", "description": "...", "depends_on": ["frontend", "test"]},
-        ]
-    }
-    """
-    if client is None:
-        print("⚠️ LLM 不可用，使用默认分析")
-        return _default_analysis(requirement)
+class LeadAgent(BaseAgent):
+    """主控 Agent —— 需求分析 + 任务编排 + 进度监控"""
 
-    prompt = f"""
-你是一个项目主管Agent。用户提出了这个需求：
-{requirement}
+    def __init__(self):
+        super().__init__(name="lead", role="lead", max_rounds=6)
+        self._role_to_id: dict = {}      # role → task_id
+        self._dispatched: set = set()    # 已分发的 task_id
+        self._all_done_reported = False
 
-请深入分析需求，并为 Team 创建带依赖关系的任务计划。任务必须遵守严格的依赖顺序：
+    def _setup_tools(self):
+        """注册 Lead 专属管理 tools（均为操作型，不调内层 LLM）"""
+        self.register_tool(
+            name="create_and_link_tasks",
+            description="根据任务计划 JSON 批量创建任务并设置依赖关系。JSON 格式：{\"project_name\":\"...\",\"tasks\":[{\"role\":\"backend\",\"subject\":\"...\",\"description\":\"...\",\"depends_on\":[]},...]}",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "analysis_json": {"type": "string", "description": "任务计划 JSON 字符串"},
+                },
+                "required": ["analysis_json"],
+            },
+            handler=self._handle_create_and_link_tasks,
+        )
 
-**依赖规则：**
-- backend 最先执行（无依赖），需要设计完整的 API 契约（包含每个端点的 request_body schema 和 response body schema）
-- frontend 依赖 backend（需要知道 API 端点+字段 schema 才能对接）
-- test 依赖 backend（需要知道 API 端点+字段 schema 才能编写测试）
-- devops 最后执行（依赖 frontend 和 test 都完成）
+        self.register_tool(
+            name="dispatch_ready_tasks",
+            description="扫描所有就绪（无阻塞）的 pending 任务，分发消息给对应的 Worker Agent。",
+            input_schema={"type": "object", "properties": {}},
+            handler=self._handle_dispatch_ready_tasks,
+        )
 
-**返回JSON格式：**
-{{
-  "project_name": "项目名称",
+        self.register_tool(
+            name="check_all_tasks",
+            description="查看所有任务的状态。",
+            input_schema={"type": "object", "properties": {}},
+            handler=self._handle_check_all_tasks,
+        )
+
+        self.register_tool(
+            name="mark_task_done",
+            description="标记一个 Worker 完成的任务。Agent 将自动解锁依赖该任务的其他任务。",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "worker_name": {"type": "string", "description": "完成任务的 Worker 名称 (backend/frontend/test/devops)"},
+                    "output": {"type": "string", "description": "Worker 汇报的输出内容"},
+                },
+                "required": ["worker_name"],
+            },
+            handler=self._handle_mark_task_done,
+        )
+
+    def get_system_prompt(self) -> str:
+        return f"""你是 Lead Agent，项目主管。负责分析需求、编排任务、监控进度。
+
+## 可用的团队成员（role）
+- backend：Python Flask 后端开发，产出 api_spec.json + app.py
+- frontend：HTML/CSS/JS 前端开发，产出 index.html
+- test：Python unittest 测试，产出 tests/test_api.py
+- devops：文档工程师，产出 README.md
+
+## 团队协作的依赖规则
+- backend 设计 API 契约，其他成员需要先拿到 API 规范才能工作
+- 因此 frontend 和 test 必须依赖 backend
+- devops 需要看到完整的项目产物，所以依赖 frontend + test 都完成
+
+## create_and_link_tasks 的 JSON 格式示例（必须严格按此结构填写 depends_on）
+```json
+{
+  "project_name": "用户管理系统",
   "tasks": [
-    {{"role": "backend", "subject": "创建后端API", "description": "详细的API实现描述...", "depends_on": []}},
-    {{"role": "frontend", "subject": "创建前端界面", "description": "详细的前端需求描述...", "depends_on": ["backend"]}},
-    {{"role": "test", "subject": "编写API测试", "description": "详细的测试需求描述...", "depends_on": ["backend"]}},
-    {{"role": "devops", "subject": "创建部署配置", "description": "详细的DevOps需求...", "depends_on": ["frontend", "test"]}}
+    {"role": "backend",  "subject": "设计 REST API 并实现后端", "description": "...(详细描述API端点)...", "depends_on": []},
+    {"role": "frontend", "subject": "实现管理页面前端",         "description": "...(详细描述页面功能)...", "depends_on": ["backend"]},
+    {"role": "test",     "subject": "编写 API 测试用例",        "description": "...(详细描述测试场景)...", "depends_on": ["backend"]},
+    {"role": "devops",   "subject": "编写项目 README 文档",     "description": "...(详细描述文档要求)...", "depends_on": ["frontend", "test"]}
   ]
-}}
+}
+```
+⚠️ depends_on 必须包含依赖的 role 名称（如 "backend"），第一个任务通常填 []，不要全部填空数组！
 
-注意:
-- description 中要包含足够的技术细节，让 Agent 可以独立工作
-- **backend 的 description 必须明确列出所有 API 端点的 path、method、request_body 字段名及类型、response body 结构**，这是前后端一致性的关键契约！
-- frontend 的 description 中说明需要严格按后端 API 契约对接（路径、字段名、响应结构）
-- 只返回JSON，不要其他文字
-"""
+## 你的工作方式
+1. 认真阅读需求，判断这是一个什么类型的项目，需要哪些角色参与
+2. 根据需求的具体内容，为每个需要的角色撰写详细的任务 description（包含具体的 API 端点、字段要求等）
+3. 调用 create_and_link_tasks 创建任务图（只调一次）
+4. 调用 dispatch_ready_tasks 分发就绪任务（只调一次）
+5. 调用 finish_task 结束（Worker 完成后会由后台事件循环自动处理）
 
-    try:
-        response = client.messages.create(
-            model=MODEL,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=3000
-        )
-        result_text = extract_text_from_response(response)
-        start = result_text.find('{')
-        end = result_text.rfind('}') + 1
-        if start >= 0 and end > start:
-            json_str = result_text[start:end]
-            return json.loads(json_str)
-        else:
-            print(f"⚠️ 无法找到JSON，使用默认分析")
-            return _default_analysis(requirement)
-    except json.JSONDecodeError as e:
-        print(f"❌ JSON 解析失败: {e}")
-        return _default_analysis(requirement)
-    except Exception as e:
-        print(f"❌ LLM 分析失败: {e}")
-        import traceback
-        traceback.print_exc()
-        return _default_analysis(requirement)
+## 任务 description 撰写要求
+- backend 的描述必须列出具体 API 端点：path、HTTP method、request/response 字段
+- frontend 的描述必须说明：API_BASE 用 'http://localhost:5000/api'（绝对地址）、需读 api_spec.json 了解接口
+- test 的描述必须说明：需读 api_spec.json、覆盖正常+边界场景
 
+## 约束
+- create_and_link_tasks 只能调用一次
+- dispatch_ready_tasks 只能调用一次
+- 调用 dispatch_ready_tasks 后立即 finish_task，不要轮询等待
+- 描述要具体，不要写"实现所有 API"这种空泛内容"""
 
-def _default_analysis(requirement: str) -> dict:
-    """默认任务分析（LLM 不可用时的回退）"""
-    return {
-        "project_name": requirement[:40],
-        "tasks": [
-            {
-                "role": "backend",
-                "subject": "创建Flask REST API",
-                "description": (
-                    f"使用Flask创建REST API: {requirement}\n\n"
-                    "要求:\n"
-                    "- 数据模型定义清晰\n"
-                    "- 包含 CRUD 端点\n"
-                    "- 返回结构化 JSON\n"
-                    "- 启用 CORS\n"
-                    "- **API 规范必须包含 request_body 和 response body 的完整字段 schema**\n"
-                    "  格式示例: {{\"title\": \"string\", \"content\": \"string\"}}\n"
-                    "- 先生成 API 规范 JSON，再生成 Flask 代码"
-                ),
-                "depends_on": []
-            },
-            {
-                "role": "frontend",
-                "subject": "创建前端界面",
-                "description": (
-                    f"创建单页面HTML应用: {requirement}\n\n"
-                    "要求:\n"
-                    "- 美观的 UI 设计\n"
-                    "- **严格按后端 API 契约对接：路径、POST 请求体字段名、GET 响应结构**\n"
-                    "- 响应式布局\n"
-                    "- 错误处理和加载状态"
-                ),
-                "depends_on": ["backend"]
-            },
-            {
-                "role": "test",
-                "subject": "编写API测试",
-                "description": (
-                    f"为后端API编写测试: {requirement}\n\n"
-                    "要求:\n"
-                    "- 使用pytest\n"
-                    "- **POST 测试数据必须使用 API 规范的 request_body 字段名**\n"
-                    "- 覆盖所有端点\n"
-                    "- 包含正常和异常场景"
-                ),
-                "depends_on": ["backend"]
-            },
-            {
-                "role": "devops",
-                "subject": "创建部署配置",
-                "description": f"创建部署配置: {requirement}\n\n要求:\n- Dockerfile\n- docker-compose.yml\n- README.md 完整文档",
-                "depends_on": ["frontend", "test"]
-            },
-        ]
-    }
+    # ── Tool Handlers（纯操作型，不调 LLM）──
 
+    def _handle_create_and_link_tasks(self, analysis_json: str) -> str:
+        """根据分析结果批量创建任务并设置依赖"""
+        try:
+            analysis = json.loads(analysis_json)
+        except json.JSONDecodeError as e:
+            return f"❌ JSON 解析失败: {e}"
 
-def create_task_graph(analysis: dict) -> dict:
-    """
-    将分析结果转换为带依赖的任务图。
-    返回 role -> task_id 的映射。
-    """
-    role_to_id = {}
+        project_name = analysis.get("project_name", "Untitled")
+        TASK_MGR.set_project(project_name, "")
 
-    # 第一遍：创建所有任务（先记录ID映射）
-    for t in analysis["tasks"]:
-        task = TASK_MGR.create(
-            subject=t["subject"],
-            description=t["description"],
-            role=t["role"],
-            blocked_by=[]  # 先不设依赖，等所有 ID 确定后再设
-        )
-        role_to_id[t["role"]] = task["id"]
-        print(f"  📋 创建 Task #{task['id']}: [{t['role']}] {t['subject']}")
+        self._role_to_id = {}
+        lines = [f"📁 项目: {project_name}", ""]
 
-    # 第二遍：设置依赖关系
-    for t in analysis["tasks"]:
-        tid = role_to_id[t["role"]]
-        blocked_ids = [role_to_id[dep] for dep in t["depends_on"] if dep in role_to_id]
-        if blocked_ids:
-            TASK_MGR.update(tid, add_blocked_by=blocked_ids)
-            deps = [f"#{bid}" for bid in blocked_ids]
-            print(f"    ↳ Task #{tid} 依赖: {', '.join(deps)}")
-
-    return role_to_id
-
-
-def dispatch_ready_tasks(role_to_id: dict, dispatched: set):
-    """
-    检查并分配就绪的任务给对应 Agent。
-    返回新分配的任务列表。
-    """
-    newly_dispatched = []
-
-    for role, tid in role_to_id.items():
-        if tid in dispatched:
-            continue
-        if TASK_MGR.is_ready(tid):
-            task = TASK_MGR.get(tid)
-            # 发送任务给对应 Agent
-            BUS.send(
-                sender="lead",
-                to=role,
-                content=task["description"],
-                msg_type="task",
-                extra={"task_id": tid, "subject": task["subject"]}
+        for t in analysis["tasks"]:
+            task = TASK_MGR.create(
+                subject=t["subject"],
+                description=t["description"],
+                role=t["role"],
+                blocked_by=[],
             )
-            TASK_MGR.claim(tid, role)
-            dispatched.add(tid)
-            newly_dispatched.append((role, tid, task["subject"]))
-            print(f"  🚀 分配 Task #{tid} → {role}: {task['subject']}")
+            self._role_to_id[t["role"]] = task["id"]
+            lines.append(f"  📋 Task #{task['id']}: [{t['role']}] {t['subject']}")
 
-    return newly_dispatched
+        for t in analysis["tasks"]:
+            tid = self._role_to_id[t["role"]]
+            blocked_ids = [self._role_to_id[d] for d in t["depends_on"] if d in self._role_to_id]
+            if blocked_ids:
+                TASK_MGR.update(tid, add_blocked_by=blocked_ids)
+                deps = ", ".join(f"#{bid}" for bid in blocked_ids)
+                lines.append(f"    ↳ Task #{tid} 依赖: {deps}")
 
+        self._dispatched.clear()
+        self._all_done_reported = False
+        lines.append(f"\n✓ 共创建 {len(analysis['tasks'])} 个任务")
+        return "\n".join(lines)
 
-def _process_requirement(requirement: str, role_to_id: dict, dispatched: set):
-    """处理需求：LLM 分析 → 创建任务图 → 分配就绪任务"""
-    print(f"\n🤖 Lead Agent 使用 LLM 分析需求...")
-    analysis = analyze_requirement_with_llm(requirement)
-    project_name = analysis.get("project_name", requirement[:50])
+    def _handle_dispatch_ready_tasks(self) -> str:
+        """扫描就绪任务并分派给对应 Worker"""
+        dispatched = []
+        for role, tid in self._role_to_id.items():
+            if tid in self._dispatched:
+                continue
+            if TASK_MGR.is_ready(tid):
+                task = TASK_MGR.get(tid)
+                BUS.send(
+                    sender="lead", to=role, content=task["description"],
+                    msg_type="task",
+                    extra={"task_id": tid, "subject": task["subject"]},
+                )
+                TASK_MGR.claim(tid, role)
+                self._dispatched.add(tid)
+                dispatched.append(f"  🚀 Task #{tid} → {role}: {task['subject']}")
 
-    TASK_MGR.set_project(project_name, requirement)
-    print(f"\n📁 项目: {project_name}")
+        if not dispatched:
+            if TASK_MGR.all_completed() and not self._all_done_reported:
+                self._all_done_reported = True
+                return "🎉 所有任务已完成！\n" + TASK_MGR.list_all()
+            return "当前没有新的就绪任务可分配（等待依赖解锁）。\n" + TASK_MGR.list_all()
 
-    print(f"\n📊 创建任务依赖图:")
-    new_role_to_id = create_task_graph(analysis)
+        return "\n".join(dispatched) + "\n\n" + TASK_MGR.list_all()
 
-    print(f"\n📋 当前任务状态:")
-    print(TASK_MGR.list_all())
-    print()
+    def _handle_check_all_tasks(self) -> str:
+        return TASK_MGR.list_all()
 
-    # 立即分配第一批就绪任务（backend）
-    dispatch_ready_tasks(new_role_to_id, dispatched)
+    def _handle_mark_task_done(self, worker_name: str, output: str = "") -> str:
+        """标记 Worker 完成的任务"""
+        for tid in self._dispatched:
+            task = TASK_MGR.get(tid)
+            if task.get("owner") == worker_name and task.get("status") == "in_progress":
+                TASK_MGR.update(tid, status="completed", output=output)
+                print(f"  ✅ Task #{tid} ({worker_name}) 完成!")
+                return f"✓ Task #{tid} ({worker_name}) 已标记完成。现在可以调用 dispatch_ready_tasks 检查是否有新任务解锁。"
 
-    return new_role_to_id
+        return f"⚠️ 未找到 {worker_name} 的 in_progress 任务"
+
+    # ── 主循环（分析阶段用 ReAct，监控阶段用事件循环）──
+
+    def run(self, poll_forever: bool = True):
+        """Lead 专属主循环：交互式输入 → ReAct 分析分发 → 事件循环监控"""
+        print("=" * 70)
+        print("👔 Lead Agent v4.0 — 纯 ReAct + 操作型工具")
+        print("=" * 70)
+        print("\n💡 提示: 可直接输入需求，或等待外部消息\n")
+
+        try:
+            user_input = input("📝 请输入项目需求（直接回车则等待外部消息）: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            user_input = ""
+
+        if user_input:
+            self._process_new_requirement(user_input)
+            print("\n⏳ 等待 Agent 完成工作...\n")
+        else:
+            print("\n⏳ 等待外部需求输入...\n")
+
+        # ── 事件循环：监控 Worker 汇报 ──
+        while True:
+            time.sleep(2)
+            inbox = BUS.read_inbox("lead")
+            for msg in inbox:
+                sender = msg.get("from", "unknown")
+                msg_type = msg.get("type", "")
+                content = msg.get("content", "")
+
+                print(f"\n📬 来自 {sender} [{msg_type}]: {content[:120]}")
+
+                if msg_type == "requirement" or (sender == "system" and "requirement:" in content.lower()):
+                    req = content.replace("requirement:", "").strip()
+                    self._process_new_requirement(req)
+
+                elif sender in ("backend", "frontend", "test", "devops"):
+                    did = self._handle_mark_task_done(sender, content)
+                    print(did)
+                    disp = self._handle_dispatch_ready_tasks()
+                    print(disp)
+                    if "所有任务已完成" in disp:
+                        print("\n" + "=" * 70)
+                        print("🎉 全部完成！输出在 .project/ 目录")
+                        print("=" * 70)
+                        if not poll_forever:
+                            return
+
+    def _process_new_requirement(self, requirement: str):
+        """处理新需求：ReAct 分析 → 创建任务 → 分发（LLM 直接在 ReAct 中产出任务 JSON）"""
+        prompt = f"""收到新需求，请分析并编排任务：
+
+<requirement>
+{requirement}
+</requirement>
+
+请执行以下步骤：
+1. 先分析这个需求需要哪些角色参与、需要哪些 API 端点、任务的依赖关系应该怎么安排
+2. 调用 create_and_link_tasks 创建任务图（给每个任务写详细描述，不要空泛）
+3. 调用 dispatch_ready_tasks 分发就绪任务
+4. 调用 finish_task 结束"""
+
+        result = self.react_loop(prompt)
+        print(f"\n[Lead] 需求分析完成: {result[:200]}")
 
 
 def main():
-    print("=" * 70)
-    print("👔 Lead Agent v2.1 - 任务依赖图驱动")
-    print("=" * 70)
-
-    # ── 支持直接在 Lead 窗口输入需求 ──
-    print("\n💡 提示: 你可以直接在此窗口输入项目需求，或使用 send_requirement.py 发送\n")
+    agent = LeadAgent()
     try:
-        user_input = input("📝 请输入你的项目需求（直接回车则等待外部消息）: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        user_input = ""
-
-    role_to_id = {}
-    dispatched = set()
-    iteration = 0
-    all_completed_reported = False
-
-    # 如果用户在窗口直接输入了需求，立即处理
-    if user_input:
-        role_to_id = _process_requirement(user_input, role_to_id, dispatched)
-        print("\n⏳ 等待 Agent 完成工作...\n")
-    else:
-        print("\n⏳ 等待外部需求输入（可通过 send_requirement.py 发送）...\n")
-
-    while True:
-        iteration += 1
-
-        # 1. 检查收件箱
-        inbox = BUS.read_inbox("lead")
-        for msg in inbox:
-            sender = msg.get("from", "unknown")
-            msg_type = msg.get("type", "")
-            content = msg.get("content", "")
-
-            print(f"\n📬 收到来自 {sender} 的消息 [{msg_type}]:")
-            print(f"   {content[:120]}...")
-
-            # 收到需求 → LLM 分析 → 创建任务图
-            if sender == "system" and "requirement:" in content.lower():
-                requirement = content.replace("requirement:", "").strip()
-                role_to_id = _process_requirement(requirement, role_to_id, dispatched)
-
-            # 子 Agent 完成汇报
-            elif sender in ("backend", "frontend", "test", "devops"):
-                # 更新任务状态
-                for tid in dispatched:
-                    task = TASK_MGR.get(tid)
-                    if task.get("owner") == sender and task.get("status") == "in_progress":
-                        TASK_MGR.update(tid, status="completed", output=content)
-                        print(f"  ✅ Task #{tid} ({sender}) 完成!")
-                        break
-
-                # 分配新解锁的任务
-                new_tasks = dispatch_ready_tasks(role_to_id, dispatched)
-                if new_tasks:
-                    print(f"  🔓 依赖解锁，新任务可分配!")
-
-        # 2. 定期打印状态
-        if iteration % 5 == 0:
-            print("\n" + "─" * 50)
-            print("📊 当前任务状态:")
-            print(TASK_MGR.list_all())
-            print("─" * 50 + "\n")
-
-            if not all_completed_reported and TASK_MGR.all_completed():
-                print("=" * 70)
-                print("🎉 所有任务已完成！")
-                print(f"📁 输出文件位于: .project/ 目录")
-                print("📊 任务详情:")
-                print(TASK_MGR.list_all())
-                print("=" * 70)
-                all_completed_reported = True
-
-        time.sleep(2)
-
-
-if __name__ == "__main__":
-    try:
-        main()
+        agent.run()
     except KeyboardInterrupt:
         print("\n\n👋 Lead Agent 停止")
         sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
