@@ -40,13 +40,13 @@ class TestAgent(BaseAgent):
 
 def main():
     if not LLM_AVAILABLE:
-        print("❌ LLM 不可用，请检查 .env 配置")
+        print("[FAIL] LLM 不可用，请检查 .env 配置")
         sys.exit(1)
     agent = TestAgent()
     try:
         agent.run()
     except KeyboardInterrupt:
-        print("\n\n👋 Test Agent 停止")
+        print("\n\n[BYE] Test Agent 停止")
         sys.exit(0)
 
 

@@ -147,6 +147,20 @@ class BaseAgent:
         )
 
         self.register_tool(
+            name="ask_user",
+            description="当遇到需要人类决策的问题时（如技术选型不确定、需求模糊、方案需要确认），向用户提问并等待回复。只在确实需要人类判断时才调用，简单问题应自行决定。",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "向用户提出的问题，清晰说明需要决策什么、有哪些选项"},
+                    "context": {"type": "string", "description": "补充上下文信息，帮助用户理解当前状况"},
+                },
+                "required": ["question"],
+            },
+            handler=self._handle_ask_user,
+        )
+
+        self.register_tool(
             name="finish_task",
             description="标记当前任务完成，并提交总结。调用此 tool 后 Agent 将结束当前工作循环。",
             input_schema={
@@ -166,28 +180,28 @@ class BaseAgent:
             fp = self.project_dir / path
             fp.parent.mkdir(parents=True, exist_ok=True)
             fp.write_text(content, encoding='utf-8')
-            return f"✓ 已写入 {fp} ({len(content)} 字节)"
+            return f"[OK] 已写入 {fp} ({len(content)} 字节)"
         except Exception as e:
-            return f"❌ 写入失败: {e}"
+            return f"[FAIL] 写入失败: {e}"
 
     def _handle_read_file(self, path: str) -> str:
         try:
             fp = self.project_dir / path
             if not fp.exists():
-                return f"⚠️ 文件不存在: {path}"
+                return f"[WARN] 文件不存在: {path}"
             content = fp.read_text(encoding='utf-8')
             # 返回摘要，避免超长
             if len(content) > 5000:
                 return content[:5000] + f"\n... (截断，共 {len(content)} 字节)"
             return content
         except Exception as e:
-            return f"❌ 读取失败: {e}"
+            return f"[FAIL] 读取失败: {e}"
 
     def _handle_list_directory(self, path: str = ".") -> str:
         try:
             fp = self.project_dir / path
             if not fp.exists():
-                return f"⚠️ 目录不存在: {path}"
+                return f"[WARN] 目录不存在: {path}"
             items = sorted(fp.rglob("*"))
             lines = []
             for item in items:
@@ -199,14 +213,14 @@ class BaseAgent:
                 return "(空目录)"
             return "\n".join(lines[:50])
         except Exception as e:
-            return f"❌ 列出目录失败: {e}"
+            return f"[FAIL] 列出目录失败: {e}"
 
     def _handle_send_message(self, to: str, content: str, msg_type: str = "message") -> str:
         try:
             BUS.send(sender=self.name, to=to, content=content, msg_type=msg_type)
-            return f"✓ 已发送 {msg_type} 消息给 {to}"
+            return f"[OK] 已发送 {msg_type} 消息给 {to}"
         except Exception as e:
-            return f"❌ 发送失败: {e}"
+            return f"[FAIL] 发送失败: {e}"
 
     def _handle_read_inbox(self) -> str:
         msgs = BUS.read_inbox(self.name)
@@ -216,7 +230,25 @@ class BaseAgent:
 
     def _handle_finish_task(self, summary: str = "") -> str:
         """finish_task 在 react_loop 中有特殊处理，这里返回标记文本"""
-        return f"✓ 任务完成: {summary}"
+        return f"[OK] 任务完成: {summary}"
+
+    def _handle_ask_user(self, question: str, context: str = "") -> str:
+        """阻塞式等待用户输入，将回复返回给 LLM 继续 ReAct 循环"""
+        print()
+        print("=" * 60)
+        print("[THINK] Agent 需要你的决策：")
+        if context:
+            print(f"   [TASK] 背景: {context}")
+        print(f"   [?] {question}")
+        print("=" * 60)
+        try:
+            reply = input("[USER] 请输入你的决定（直接回车跳过）: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            reply = ""
+        if not reply:
+            reply = "(用户未提供输入，请基于默认方案自行决定并继续)"
+        print(f"   [OK] 已回复\n")
+        return reply
 
     # ── 通用辅助方法 ──
 
@@ -247,7 +279,7 @@ class BaseAgent:
         返回最终的任务总结。
         """
         if not LLM_AVAILABLE or _client is None:
-            print(f"⚠️ [{self.name}] LLM 不可用，跳过 ReAct 循环")
+            print(f"[WARN] [{self.name}] LLM 不可用，跳过 ReAct 循环")
             return "LLM 不可用，任务未处理"
 
         system_prompt = self.get_system_prompt()
@@ -274,7 +306,7 @@ class BaseAgent:
                     max_tokens=8000,
                 )
             except Exception as e:
-                print(f"  ❌ [{self.name}] LLM 调用失败: {e}")
+                print(f"  [FAIL] [{self.name}] LLM 调用失败: {e}")
                 return f"LLM 调用失败: {e}"
 
             messages.append({"role": "assistant", "content": response.content})
@@ -282,12 +314,12 @@ class BaseAgent:
             # 打印 LLM 的思考/回复
             for block in response.content:
                 if hasattr(block, "text") and block.text:
-                    print(f"  💬 [{self.name}] {block.text[:200]}")
+                    print(f"  [MSG] [{self.name}] {block.text[:200]}")
 
             # 如果 LLM 决定结束（不再调用 tool），退出循环
             if response.stop_reason != "tool_use":
                 final_result = extract_text_from_response(response)
-                print(f"  ✅ [{self.name}] 完成（stop_reason={response.stop_reason}）")
+                print(f"  [OK] [{self.name}] 完成（stop_reason={response.stop_reason}）")
                 return final_result
 
             # ── 执行 Tools ──
@@ -308,7 +340,7 @@ class BaseAgent:
                     except (json.JSONDecodeError, TypeError):
                         pass  # 保持原样
 
-                print(f"  🔧 [{self.name}] 调用工具: {tool_name}({json.dumps(tool_input, ensure_ascii=False)[:100]})")
+                print(f"  [TOOL] [{self.name}] 调用工具: {tool_name}({json.dumps(tool_input, ensure_ascii=False)[:100]})")
 
                 # 特殊处理 finish_task
                 if tool_name == "finish_task":
@@ -321,11 +353,11 @@ class BaseAgent:
                         try:
                             output = handler(**tool_input)
                         except Exception as e:
-                            output = f"❌ 工具执行出错: {e}"
+                            output = f"[FAIL] 工具执行出错: {e}"
                             import traceback
                             traceback.print_exc()
                     else:
-                        output = f"❌ 未知工具: {tool_name}"
+                        output = f"[FAIL] 未知工具: {tool_name}"
 
                 results.append({
                     "type": "tool_result",
@@ -338,10 +370,10 @@ class BaseAgent:
             messages.append({"role": "user", "content": results})
 
             if finished:
-                print(f"  ✅ [{self.name}] finish_task 被调用，退出循环")
+                print(f"  [OK] [{self.name}] finish_task 被调用，退出循环")
                 return final_result
 
-        print(f"  ⚠️ [{self.name}] 达到最大轮数 {self.max_rounds}，强制退出")
+        print(f"  [WARN] [{self.name}] 达到最大轮数 {self.max_rounds}，强制退出")
         return f"达到最大轮数 ({self.max_rounds})，任务可能未完成"
 
     # ── 主运行循环 ──
@@ -354,7 +386,7 @@ class BaseAgent:
         """
         print(f"[{self.name}] Agent 启动 (role={self.role}, max_rounds={self.max_rounds})")
         if not LLM_AVAILABLE:
-            print(f"[{self.name}] ⚠️ LLM 不可用，将在无 AI 模式下运行")
+            print(f"[{self.name}] [WARN] LLM 不可用，将在无 AI 模式下运行")
         print(f"[{self.name}] 等待任务...\n")
 
         while True:
@@ -370,7 +402,7 @@ class BaseAgent:
                         task_content = msg.get("content", "")
 
                         print(f"\n{'='*60}")
-                        print(f"[{self.name}] 📋 收到任务 #{task_id}")
+                        print(f"[{self.name}] [TASK] 收到任务 #{task_id}")
                         print(f"[{self.name}] 内容: {task_content[:150]}...")
                         print(f"{'='*60}\n")
 
@@ -378,7 +410,7 @@ class BaseAgent:
                         result = self.react_loop(task_content)
 
                         # ── 汇报给 Lead ──
-                        print(f"\n[{self.name}] 📤 向 Lead 汇报:")
+                        print(f"\n[{self.name}] [SEND] 向 Lead 汇报:")
                         print(f"  {result[:200]}")
                         BUS.send(
                             sender=self.name,
@@ -387,13 +419,13 @@ class BaseAgent:
                             msg_type="status",
                             extra={"task_id": task_id},
                         )
-                        print(f"[{self.name}] ✓ 汇报完毕\n")
+                        print(f"[{self.name}] [OK] 汇报完毕\n")
 
                         if not poll_forever:
                             return
 
                 except Exception as e:
-                    print(f"[{self.name}] ❌ 处理消息出错: {e}")
+                    print(f"[{self.name}] [FAIL] 处理消息出错: {e}")
                     import traceback
                     traceback.print_exc()
 
@@ -428,4 +460,4 @@ if __name__ == "__main__":
     print(f"已注册 {len(agent._tools)} 个 tools:")
     for t in agent._tools:
         print(f"  - {t['name']}: {t['description']}")
-    print("\nTestAgent 就绪 ✓")
+    print("\nTestAgent 就绪 [OK]")

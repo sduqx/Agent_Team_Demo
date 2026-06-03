@@ -3,3 +3,5 @@ Flask-CORS==4.0.0
 Werkzeug==2.3.7
 python-dotenv==1.0.0
 anthropic>=0.7.0
+
+requests~=2.34.2

@@ -107,22 +107,26 @@ class TaskManager:
                 "owner": None,
                 "blockedBy": blocked_by or [],
                 "output": "",
-                "dependents": [],  # 依赖本任务的其他任务ID（自动维护）
             }
-            # 注册反向依赖
-            for bid in task["blockedBy"]:
-                try:
-                    dep_task = self._load(bid)
-                    if task["id"] not in dep_task.get("dependents", []):
-                        dep_task.setdefault("dependents", []).append(task["id"])
-                        self._save(dep_task)
-                except ValueError:
-                    pass  # 前置任务尚未创建
             self._save(task)
             return task
 
     def get(self, tid: int) -> dict:
         return self._load(tid)
+
+    def _scan_and_unlock(self, tid: int):
+        """扫描所有任务，从 blockedBy 中移除已完成的任务 ID（替代原 dependents 反向查找）"""
+        for f in TASKS_DIR.glob("*.json"):
+            if not f.stem.isdigit():
+                continue
+            dep_task = json.loads(f.read_text(encoding='utf-8'))
+            if tid in dep_task.get("blockedBy", []):
+                dep_task["blockedBy"].remove(tid)
+                self._task_path(dep_task["id"]).write_text(
+                    json.dumps(dep_task, indent=2, ensure_ascii=False),
+                    encoding='utf-8'
+                )
+                print(f"  [UNLOCK] Task #{dep_task['id']} 解锁（前置 #{tid} 已完成）")
 
     def update(self, tid: int, status: str = None,
                owner: str = None, output: str = None,
@@ -138,17 +142,9 @@ class TaskManager:
                 old_status = task["status"]
                 task["status"] = status
 
-                # 任务完成：自动解锁所有 dependents
+                # 任务完成：扫描所有任务，从 blockedBy 中移除当前任务 ID
                 if status == "completed" and old_status != "completed":
-                    for dep_id in task.get("dependents", []):
-                        try:
-                            dep_task = self._load(dep_id)
-                            if tid in dep_task.get("blockedBy", []):
-                                dep_task["blockedBy"].remove(tid)
-                                self._save(dep_task)
-                                print(f"  🔓 Task #{dep_id} 解锁（前置 #{tid} 已完成）")
-                        except ValueError:
-                            pass
+                    self._scan_and_unlock(tid)
 
             if owner is not None:
                 task["owner"] = owner
@@ -158,14 +154,6 @@ class TaskManager:
                 task["output"] = output
             if add_blocked_by:
                 task["blockedBy"] = list(set(task["blockedBy"] + add_blocked_by))
-                for bid in add_blocked_by:
-                    try:
-                        dep_task = self._load(bid)
-                        if tid not in dep_task.get("dependents", []):
-                            dep_task.setdefault("dependents", []).append(tid)
-                            self._save(dep_task)
-                    except ValueError:
-                        pass
             if remove_blocked_by:
                 task["blockedBy"] = [x for x in task["blockedBy"] if x not in remove_blocked_by]
             self._save(task)
@@ -219,6 +207,13 @@ class TaskManager:
         data["name"] = name
         data["description"] = description
         data["status"] = "in_progress"
+        pf.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding='utf-8')
+
+    def set_project_status(self, status: str):
+        """更新项目整体状态 (pending / in_progress / completed)"""
+        pf = SHARED_DIR / "project.json"
+        data = json.loads(pf.read_text(encoding='utf-8')) if pf.exists() else {}
+        data["status"] = status
         pf.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding='utf-8')
 
     def all_completed(self) -> bool:
@@ -367,13 +362,13 @@ class SharedContext:
     def get_status(self):
         tasks = self.project_data.get("tasks", {})
         lines = [
-            f"📋 项目: {self.project_data.get('name', 'N/A')}",
-            f"📝 描述: {self.project_data.get('description', '')}",
-            f"🎯 状态: {self.project_data.get('status', 'unknown')}",
+            f"[TASK] 项目: {self.project_data.get('name', 'N/A')}",
+            f"[INPUT] 描述: {self.project_data.get('description', '')}",
+            f"[STATUS] 状态: {self.project_data.get('status', 'unknown')}",
             "--- 各Agent进度 ---",
         ]
         for agent, info in tasks.items():
-            icon = "✓" if info.get("status") == "completed" else "⏳"
+            icon = "[OK]" if info.get("status") == "completed" else "[WAIT]"
             lines.append(f"{agent:10s}: {icon} {info.get('status', 'unknown'):12s}")
         return "\n".join(lines)
 
