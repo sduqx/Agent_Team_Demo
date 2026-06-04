@@ -1,0 +1,421 @@
+"""
+共享上下文模块 v2.0 - 与 v1.0 兼容的消息总线 + 任务管理器
+v2.0 新增：支持动态 Agent 名称（不限制特定角色名）
+"""
+
+import json
+import re
+import threading
+import time
+from pathlib import Path
+from typing import Dict, Any, List, Optional
+
+# ============================================================
+# 工具函数
+# ============================================================
+
+def extract_text_from_response(response) -> str:
+    """从LLM响应中提取文本内容（兼容 ThinkingBlock）"""
+    text_parts = []
+    if hasattr(response.content, '__iter__'):
+        for block in response.content:
+            if hasattr(block, 'type') and block.type == 'thinking':
+                continue
+            if hasattr(block, 'text'):
+                text_parts.append(block.text)
+    else:
+        return str(response.content)
+    return "".join(text_parts)
+
+
+# ============================================================
+# 目录结构
+# ============================================================
+
+TEAM_DIR = Path.cwd() / ".team"
+SHARED_DIR = TEAM_DIR / "shared"
+INBOX_DIR = TEAM_DIR / "inbox"
+TASKS_DIR = TEAM_DIR / "tasks"
+
+for d in [TEAM_DIR, SHARED_DIR, INBOX_DIR, TASKS_DIR]:
+    d.mkdir(parents=True, exist_ok=True)
+
+
+# ============================================================
+# TaskManager - 带依赖关系的任务管理器
+# ============================================================
+
+class TaskManager:
+    """
+    持久化任务管理器，支持依赖关系 (blockedBy)。
+    v2.0: role 不再限制为固定的 backend/frontend/test/devops，
+    可以是任意字符串（如 mobile、data、design 等）。
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        TASKS_DIR.mkdir(exist_ok=True)
+        self._ensure_project_file()
+
+    def _ensure_project_file(self):
+        pf = SHARED_DIR / "project.json"
+        if not pf.exists():
+            pf.write_text(json.dumps({
+                "name": "Untitled Project",
+                "description": "",
+                "status": "pending",
+            }, indent=2, ensure_ascii=False), encoding='utf-8')
+
+    def _next_id(self) -> int:
+        ids = [int(f.stem) for f in TASKS_DIR.glob("*.json") if f.stem.isdigit()]
+        return max(ids, default=0) + 1
+
+    def _task_path(self, tid: int) -> Path:
+        return TASKS_DIR / f"{tid}.json"
+
+    def _load(self, tid: int) -> dict:
+        p = self._task_path(tid)
+        if not p.exists():
+            raise ValueError(f"Task #{tid} not found")
+        return json.loads(p.read_text(encoding='utf-8'))
+
+    def _save(self, task: dict):
+        self._task_path(task["id"]).write_text(
+            json.dumps(task, indent=2, ensure_ascii=False),
+            encoding='utf-8'
+        )
+
+    def create(self, subject: str, description: str = "",
+               role: str = "", blocked_by: List[int] = None,
+               expected_files: List[str] = None) -> dict:
+        """创建任务。role 可以是任意字符串。
+        expected_files: 承诺的产出文件列表，用于完成时自动验证。"""
+        with self._lock:
+            task = {
+                "id": self._next_id(),
+                "subject": subject,
+                "description": description,
+                "role": role,
+                "status": "pending",
+                "owner": None,
+                "blockedBy": blocked_by or [],
+                "output": "",
+                "expectedFiles": expected_files or [],
+            }
+            self._save(task)
+            return task
+
+    def get(self, tid: int) -> dict:
+        return self._load(tid)
+
+    def _scan_and_unlock(self, tid: int):
+        for f in TASKS_DIR.glob("*.json"):
+            if not f.stem.isdigit():
+                continue
+            dep_task = json.loads(f.read_text(encoding='utf-8'))
+            if tid in dep_task.get("blockedBy", []):
+                dep_task["blockedBy"].remove(tid)
+                self._task_path(dep_task["id"]).write_text(
+                    json.dumps(dep_task, indent=2, ensure_ascii=False),
+                    encoding='utf-8'
+                )
+                print(f"  [UNLOCK] Task #{dep_task['id']} 解锁（前置 #{tid} 已完成）")
+
+    def update(self, tid: int, status: str = None,
+               owner: str = None, output: str = None,
+               add_blocked_by: List[int] = None,
+               remove_blocked_by: List[int] = None) -> dict:
+        with self._lock:
+            task = self._load(tid)
+            if status:
+                old_status = task["status"]
+                task["status"] = status
+                if status == "completed" and old_status != "completed":
+                    self._scan_and_unlock(tid)
+            if owner is not None:
+                task["owner"] = owner
+                if status is None:
+                    task["status"] = "in_progress"
+            if output is not None:
+                task["output"] = output
+            if add_blocked_by:
+                task["blockedBy"] = list(set(task["blockedBy"] + add_blocked_by))
+            if remove_blocked_by:
+                task["blockedBy"] = [x for x in task["blockedBy"] if x not in remove_blocked_by]
+            self._save(task)
+            return task
+
+    def is_ready(self, tid: int) -> bool:
+        task = self._load(tid)
+        if task["status"] != "pending":
+            return False
+        if task.get("owner"):
+            return False
+        return len(task.get("blockedBy", [])) == 0
+
+    def claim(self, tid: int, owner: str) -> dict:
+        return self.update(tid, owner=owner)
+
+    def get_ready_tasks(self, role: str = None) -> List[dict]:
+        ready = []
+        for f in sorted(TASKS_DIR.glob("*.json")):
+            if not f.stem.isdigit():
+                continue
+            task = json.loads(f.read_text(encoding='utf-8'))
+            if task["status"] == "pending" and len(task.get("blockedBy", [])) == 0:
+                if role is None or task.get("role") == role:
+                    ready.append(task)
+        return ready
+
+    def list_all(self) -> str:
+        tasks = []
+        for f in sorted(TASKS_DIR.glob("*.json")):
+            if not f.stem.isdigit():
+                continue
+            tasks.append(json.loads(f.read_text(encoding='utf-8')))
+        if not tasks:
+            return "No tasks."
+        lines = []
+        for t in tasks:
+            m = {"pending": "[ ]", "in_progress": "[>]", "completed": "[x]"}.get(t["status"], "[?]")
+            owner = f" @{t['owner']}" if t.get("owner") else ""
+            role = f" ({t.get('role', '')})" if t.get("role") else ""
+            blocked = f" ← 等待 #{t['blockedBy']}" if t.get("blockedBy") else ""
+            lines.append(f"  {m} #{t['id']}: {t['subject']}{role}{owner}{blocked}")
+        return "\n".join(lines)
+
+    def set_project(self, name: str, description: str):
+        pf = SHARED_DIR / "project.json"
+        data = json.loads(pf.read_text(encoding='utf-8')) if pf.exists() else {}
+        data["name"] = name
+        data["description"] = description
+        data["status"] = "in_progress"
+        pf.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding='utf-8')
+
+    def set_project_status(self, status: str):
+        pf = SHARED_DIR / "project.json"
+        data = json.loads(pf.read_text(encoding='utf-8')) if pf.exists() else {}
+        data["status"] = status
+        pf.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding='utf-8')
+
+    def verify_task_output(self, tid: int, project_dir: Path = None) -> dict:
+        """验证任务产出：检查 expectedFiles 是否都已创建。
+        
+        返回: {"pass": bool, "missing": [str], "found": [str], "detail": str}
+        """
+        task = self._load(tid)
+        expected = task.get("expectedFiles", [])
+        if not expected:
+            return {"pass": True, "missing": [], "found": [], "detail": "(无预期产出文件，跳过验证)"}
+
+        if project_dir is None:
+            project_dir = Path.cwd() / ".project"
+
+        found = []
+        missing = []
+        for f in expected:
+            fp = project_dir / f
+            if fp.exists() and fp.stat().st_size > 0:
+                found.append(f)
+            else:
+                missing.append(f)
+
+        detail_lines = []
+        for f in sorted(found):
+            size = (project_dir / f).stat().st_size
+            detail_lines.append(f"  ✅ {f} ({size}B)")
+        for f in sorted(missing):
+            detail_lines.append(f"  ❌ {f} (缺失或为空)")
+
+        return {
+            "pass": len(missing) == 0,
+            "missing": missing,
+            "found": found,
+            "detail": "\n".join(detail_lines) if detail_lines else "(无验证项)",
+        }
+
+    def all_completed(self) -> bool:
+        tasks = [f for f in TASKS_DIR.glob("*.json") if f.stem.isdigit()]
+        if not tasks:
+            return False
+        for f in tasks:
+            t = json.loads(f.read_text(encoding='utf-8'))
+            if t.get("status") != "completed":
+                return False
+        return True
+
+
+# ============================================================
+# MessageBus - 增强消息总线
+# ============================================================
+
+class MessageBus:
+    """
+    消息总线，支持任意 Agent 名称之间的消息传递。
+    v2.0: 不再限制 to 参数为固定角色名。
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        INBOX_DIR.mkdir(parents=True, exist_ok=True)
+
+    def send(self, sender: str, to: str, content: str,
+             msg_type: str = "message", extra: dict = None):
+        msg = {
+            "type": msg_type,
+            "from": sender,
+            "to": to,
+            "content": content,
+            "timestamp": time.time(),
+        }
+        if extra:
+            msg.update(extra)
+        with self._lock:
+            with open(INBOX_DIR / f"{to}.jsonl", "a", encoding='utf-8') as f:
+                f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+
+    def read_inbox(self, name: str) -> list:
+        path = INBOX_DIR / f"{name}.jsonl"
+        if not path.exists():
+            return []
+        with self._lock:
+            lines = path.read_text(encoding='utf-8').strip().splitlines()
+            msgs = [json.loads(l) for l in lines if l.strip()]
+            path.write_text("", encoding='utf-8')
+        return msgs
+
+    def broadcast(self, sender: str, content: str, names: list,
+                  msg_type: str = "broadcast"):
+        for n in names:
+            if n != sender:
+                self.send(sender, n, content, msg_type)
+
+
+# ============================================================
+# API Spec Store - 结构化 API 信息存储
+# ============================================================
+
+class APISpecStore:
+    """存储后端发布的 API 规范，供前端和测试 Agent 查询"""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._spec_file = SHARED_DIR / "api_spec.json"
+
+    def publish(self, spec: dict):
+        with self._lock:
+            self._spec_file.write_text(
+                json.dumps(spec, indent=2, ensure_ascii=False),
+                encoding='utf-8'
+            )
+
+    def get_spec(self) -> Optional[dict]:
+        if not self._spec_file.exists():
+            return None
+        return json.loads(self._spec_file.read_text(encoding='utf-8'))
+
+    def wait_for_spec(self, timeout: int = 120) -> Optional[dict]:
+        start = time.time()
+        while time.time() - start < timeout:
+            spec = self.get_spec()
+            if spec:
+                return spec
+            time.sleep(2)
+        return None
+
+
+# ============================================================
+# 全局单例
+# ============================================================
+
+class SharedContext:
+    """兼容旧接口"""
+    def __init__(self):
+        self.project_file = SHARED_DIR / "project.json"
+        self.project_data = self._load_project()
+
+    def _load_project(self):
+        if self.project_file.exists():
+            return json.loads(self.project_file.read_text(encoding='utf-8'))
+        return {
+            "name": "Untitled Project",
+            "description": "",
+            "status": "pending",
+            "tasks": {},
+        }
+
+    def save_project(self):
+        self.project_file.write_text(
+            json.dumps(self.project_data, indent=2, ensure_ascii=False),
+            encoding='utf-8'
+        )
+
+    def update_task(self, agent_name, status, output=""):
+        if "tasks" not in self.project_data:
+            self.project_data["tasks"] = {}
+        self.project_data["tasks"][agent_name] = {"status": status, "output": output}
+        self.save_project()
+
+    def set_project(self, name, description):
+        self.project_data["name"] = name
+        self.project_data["description"] = description
+        self.project_data["status"] = "in_progress"
+        self.save_project()
+
+    def update_backend_spec(self, spec):
+        self.project_data["backend_spec"] = spec
+        self.save_project()
+
+    def get_status(self):
+        tasks = self.project_data.get("tasks", {})
+        lines = [
+            f"[TASK] 项目: {self.project_data.get('name', 'N/A')}",
+            f"[INPUT] 描述: {self.project_data.get('description', '')}",
+            f"[STATUS] 状态: {self.project_data.get('status', 'unknown')}",
+            "--- 各Agent进度 ---",
+        ]
+        for agent, info in tasks.items():
+            icon = "[OK]" if info.get("status") == "completed" else "[WAIT]"
+            lines.append(f"{agent:10s}: {icon} {info.get('status', 'unknown'):12s}")
+        return "\n".join(lines)
+
+
+# 兼容旧代码的 send/read 函数
+def send_message(from_agent: str, to_agent: str, message: str):
+    msg = {"from": from_agent, "to": to_agent, "content": message, "type": "message"}
+    inbox_file = INBOX_DIR / f"{to_agent}.jsonl"
+    with open(inbox_file, "a", encoding='utf-8') as f:
+        f.write(json.dumps(msg, ensure_ascii=False) + "\n")
+
+
+def read_messages(agent_name: str) -> list:
+    inbox_file = INBOX_DIR / f"{agent_name}.jsonl"
+    if not inbox_file.exists():
+        return []
+    messages = []
+    with open(inbox_file, "r", encoding='utf-8') as f:
+        for line in f:
+            if line.strip():
+                messages.append(json.loads(line))
+    inbox_file.write_text("", encoding='utf-8')
+    return messages
+
+
+# 全局实例
+TASK_MGR = TaskManager()
+BUS = MessageBus()
+API_SPEC = APISpecStore()
+
+
+if __name__ == "__main__":
+    print("TaskManager 自测:")
+    t1 = TASK_MGR.create("设计架构", "系统架构设计", role="architect")
+    t2 = TASK_MGR.create("实现后端", "API 实现", role="backend_go", blocked_by=[t1["id"]])
+    print(f"\n初始状态:")
+    print(TASK_MGR.list_all())
+    print(f"\nTask #2 就绪? {TASK_MGR.is_ready(t2['id'])}  (应为 False)")
+    TASK_MGR.update(t1["id"], status="completed")
+    print(f"\n#1 完成后:")
+    print(TASK_MGR.list_all())
+    print(f"Task #2 就绪? {TASK_MGR.is_ready(t2['id'])}  (应为 True)")
+    print("\nshared_context v2.0 自测 [OK]")

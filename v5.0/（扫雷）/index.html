@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>经典扫雷</title>
+<style>
+  /* ==================== 全局重置 & 基础 ==================== */
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #008080; /* 经典 Windows 桌面背景 */
+    min-height: 100vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-family: 'Segoe UI', 'Arial', sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+    padding: 10px;
+  }
+
+  /* ==================== 主窗口 ==================== */
+  .container {
+    background: #c0c0c0;
+    border: 3px solid #ffffff;
+    border-right-color: #808080;
+    border-bottom-color: #808080;
+    padding: 8px;
+    box-shadow: 1px 1px 0 #404040, inset 1px 1px 0 #dfdfdf;
+    max-width: 100vw;
+    overflow-x: auto;
+  }
+
+  /* ==================== 顶部信息栏 ==================== */
+  .top-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background: #c0c0c0;
+    border: 2px solid #808080;
+    border-right-color: #ffffff;
+    border-bottom-color: #ffffff;
+    padding: 4px 6px;
+    margin-bottom: 6px;
+    gap: 10px;
+  }
+
+  .counter, .timer {
+    background: #000;
+    color: #ff0000;
+    font-family: 'Consolas', 'Courier New', monospace;
+    font-size: 28px;
+    font-weight: bold;
+    padding: 2px 6px;
+    min-width: 52px;
+    text-align: center;
+    letter-spacing: 2px;
+    border: 2px inset #808080;
+    line-height: 1.2;
+  }
+
+  .smiley {
+    font-size: 32px;
+    line-height: 1;
+    cursor: pointer;
+    background: #c0c0c0;
+    border: 2px solid #ffffff;
+    border-right-color: #808080;
+    border-bottom-color: #808080;
+    padding: 2px 8px;
+    transition: 0.05s;
+  }
+  .smiley:active {
+    border: 2px solid #808080;
+    border-right-color: #ffffff;
+    border-bottom-color: #ffffff;
+  }
+
+  /* ==================== 难度按钮 ==================== */
+  .controls {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 6px;
+    flex-wrap: wrap;
+  }
+  .controls button {
+    flex: 1;
+    min-width: 70px;
+    padding: 4px 8px;
+    font-size: 12px;
+    font-weight: bold;
+    background: #c0c0c0;
+    border: 2px solid #ffffff;
+    border-right-color: #808080;
+    border-bottom-color: #808080;
+    cursor: pointer;
+    text-align: center;
+    transition: 0.05s;
+  }
+  .controls button:active {
+    border: 2px solid #808080;
+    border-right-color: #ffffff;
+    border-bottom-color: #ffffff;
+  }
+  .controls button.active {
+    border: 2px solid #808080;
+    border-right-color: #ffffff;
+    border-bottom-color: #ffffff;
+    background: #a0a0a0;
+  }
+
+  /* ==================== 棋盘 ==================== */
+  .board-wrapper {
+    background: #c0c0c0;
+    border: 3px solid #808080;
+    border-right-color: #ffffff;
+    border-bottom-color: #ffffff;
+    padding: 2px;
+    display: inline-block;
+  }
+  .board {
+    display: grid;
+    gap: 0;
+    margin: 0 auto;
+  }
+
+  /* ==================== 每个格子 ==================== */
+  .cell {
+    width: 28px;
+    height: 28px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 15px;
+    font-weight: 900;
+    cursor: pointer;
+    border: 2px solid;
+    border-color: #ffffff #808080 #808080 #ffffff;
+    background: #c0c0c0;
+    transition: 0.05s;
+    box-sizing: border-box;
+    position: relative;
+  }
+  /* 已翻开的格子 */
+  .cell.revealed {
+    border: 1px solid #808080;
+    background: #d1d1d1;
+    cursor: default;
+  }
+  /* 踩雷高亮 */
+  .cell.mine-hit {
+    background: #ff0000 !important;
+  }
+  /* 标记错误的红旗（游戏结束时显示 X） */
+  .cell.mine-wrong {
+    background: #ff8888;
+  }
+
+  /* ==================== 数字颜色 ==================== */
+  .cell.n1 { color: #0000ff; }
+  .cell.n2 { color: #008000; }
+  .cell.n3 { color: #ff0000; }
+  .cell.n4 { color: #000080; }
+  .cell.n5 { color: #800000; }
+  .cell.n6 { color: #008080; }
+  .cell.n7 { color: #000000; }
+  .cell.n8 { color: #808080; }
+
+  /* ==================== 移动端适配 ==================== */
+  @media (max-width: 500px) {
+    .cell { width: 24px; height: 24px; font-size: 13px; }
+    .counter, .timer { font-size: 20px; min-width: 40px; }
+    .smiley { font-size: 26px; }
+  }
+  @media (max-width: 380px) {
+    .cell { width: 20px; height: 20px; font-size: 11px; }
+    .counter, .timer { font-size: 16px; min-width: 34px; }
+    .smiley { font-size: 22px; }
+  }
+  /* 触摸优化：长按右键模拟 */
+  @media (pointer: coarse) {
+    .cell { touch-action: manipulation; }
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <!-- 难度选择 -->
+  <div class="controls">
+    <button data-mode="beginner" class="active">初级<br><small>9×9 · 10雷</small></button>
+    <button data-mode="intermediate">中级<br><small>16×16 · 40雷</small></button>
+    <button data-mode="advanced">高级<br><small>30×16 · 99雷</small></button>
+  </div>
+
+  <!-- 顶部状态栏 -->
+  <div class="top-bar">
+    <div class="counter" id="mineCounter">000</div>
+    <div class="smiley" id="smileyBtn">😊</div>
+    <div class="timer" id="timerDisplay">000</div>
+  </div>
+
+  <!-- 棋盘 -->
+  <div class="board-wrapper">
+    <div class="board" id="board"></div>
+  </div>
+</div>
+
+<script>
+(function() {
+  'use strict';
+
+  /* ======================== 配置 ======================== */
+  const MODES = {
+    beginner:      { rows: 9,  cols: 9,  mines: 10 },
+    intermediate:  { rows: 16, cols: 16, mines: 40 },
+    advanced:      { rows: 16, cols: 30, mines: 99 }
+  };
+
+  /* ======================== DOM 引用 ======================== */
+  const boardEl     = document.getElementById('board');
+  const mineCounter = document.getElementById('mineCounter');
+  const timerDisplay= document.getElementById('timerDisplay');
+  const smileyBtn   = document.getElementById('smileyBtn');
+  const modeBtns    = document.querySelectorAll('.controls button');
+
+  /* ======================== 游戏状态 ======================== */
+  let currentMode = 'beginner';
+  let rows = 9, cols = 9, totalMines = 10;
+  let grid = [];            // 二维数组，每格对象
+  let gameOver = false;
+  let gameStarted = false;  // 首次点击后才布雷
+  let firstClick = true;    // 是否首次点击
+  let flagCount = 0;
+  let timerInterval = null;
+  let seconds = 0;
+
+  /* ======================== 方向偏移（用于邻格遍历） ======================== */
+  const DIRS = [
+    [-1,-1],[-1,0],[-1,1],
+    [0,-1],         [0,1],
+    [1,-1], [1,0], [1,1]
+  ];
+
+  /* ======================== 工具函数 ======================== */
+  function pad3(n) {
+    return String(Math.max(0, Math.min(999, n))).padStart(3, '0');
+  }
+
+  function updateMineCounter() {
+    const val = totalMines - flagCount;
+    mineCounter.textContent = pad3(val);
+  }
+
+  function updateTimer() {
+    timerDisplay.textContent = pad3(seconds);
+  }
+
+  function stopTimer() {
+    if (timerInterval) {
+      clearInterval(timerInterval);
+      timerInterval = null;
+    }
+  }
+
+  function startTimer() {
+    if (timerInterval) return;
+    seconds = 0;
+    updateTimer();
+    timerInterval = setInterval(() => {
+      seconds++;
+      if (seconds > 999) seconds = 999;
+      updateTimer();
+    }, 1000);
+  }
+
+  function resetTimer() {
+    stopTimer();
+    seconds = 0;
+    updateTimer();
+  }
+
+  function setSmiley(state) {
+    if (state === 'win') smileyBtn.textContent = '😎';
+    else if (state === 'lose') smileyBtn.textContent = '💀';
+    else smileyBtn.textContent = '😊';
+  }
+
+  /* ======================== 布雷算法（首次点击安全） ======================== */
+  function placeMines(safeRow, safeCol) {
+    let placed = 0;
+    while (placed < totalMines) {
+      const r = Math.floor(Math.random() * rows);
+      const c = Math.floor(Math.random() * cols);
+      // 跳过安全区域（以首次点击为中心的 3×3）
+      if (Math.abs(r - safeRow) <= 1 && Math.abs(c - safeCol) <= 1) continue;
+      if (!grid[r][c].mine) {
+        grid[r][c].mine = true;
+        placed++;
+      }
+    }
+  }
+
+  /* ======================== 计算周边雷数 ======================== */
+  function calcNumbers() {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        if (grid[r][c].mine) continue;
+        let cnt = 0;
+        for (const [dr, dc] of DIRS) {
+          const nr = r + dr, nc = c + dc;
+          if (nr >= 0 && nr < rows && nc >= 0 && nc < cols && grid[nr][nc].mine) cnt++;
+        }
+        grid[r][c].number = cnt;
+      }
+    }
+  }
+
+  /* ======================== 初始化网格 ======================== */
+  function initGrid() {
+    grid = [];
+    for (let r = 0; r < rows; r++) {
+      grid[r] = [];
+      for (let c = 0; c < cols; c++) {
+        grid[r][c] = {
+          mine: false,
+          number: 0,
+          revealed: false,
+          flagged: false,
+          element: null
+        };
+      }
+    }
+  }
+
+  /* ======================== 渲染棋盘 ======================== */
+  function renderBoard() {
+    boardEl.innerHTML = '';
+    boardEl.style.gridTemplateColumns = `repeat(${cols}, 28px)`;
+    // 移动端自适应列宽
+    if (window.innerWidth < 500 && cols > 16) {
+      boardEl.style.gridTemplateColumns = `repeat(${cols}, 24px)`;
+    }
+    if (window.innerWidth < 380 && cols > 20) {
+      boardEl.style.gridTemplateColumns = `repeat(${cols}, 20px)`;
+    }
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const cell = document.createElement('div');
+        cell.className = 'cell';
+        cell.dataset.r = r;
+        cell.dataset.c = c;
+        boardEl.appendChild(cell);
+        grid[r][c].element = cell;
+
+        // --- 左键事件 ---
+        cell.addEventListener('click', function(e) {
+          e.preventDefault();
+          handleLeftClick(r, c);
+        });
+
+        // --- 右键事件（桌面右键 / 移动端长按） ---
+        cell.addEventListener('contextmenu', function(e) {
+          e.preventDefault();
+          handleRightClick(r, c);
+        });
+
+        // 移动端：长按模拟右键（600ms）
+        let longPressTimer = null;
+        let longPressTriggered = false;
+
+        cell.addEventListener('touchstart', function(e) {
+          longPressTriggered = false;
+          longPressTimer = setTimeout(() => {
+            longPressTriggered = true;
+            // 触发右键
+            handleRightClick(r, c);
+          }, 600);
+        }, { passive: true });
+
+        cell.addEventListener('touchmove', function() {
+          clearTimeout(longPressTimer);
+        }, { passive: true });
+
+        cell.addEventListener('touchend', function(e) {
+          clearTimeout(longPressTimer);
+          // 如果长按已触发，不再触发左键点击
+          if (longPressTriggered) {
+            e.preventDefault();
+            return;
+          }
+          // 短按当作左键（但浏览器的 click 事件也会触发，所以这里 preventDefault 避免双击）
+          // 实际上 touchend 后还会触发 click，我们在 click 里处理即可
+        }, { passive: false });
+
+        // 避免移动端点击时出现页面缩放等干扰
+        cell.addEventListener('touchcancel', function() {
+          clearTimeout(longPressTimer);
+        }, { passive: true });
+      }
+    }
+  }
+
+  /* ======================== 左键点击 ======================== */
+  function handleLeftClick(r, c) {
+    if (gameOver) return;
+    const cell = grid[r][c];
+    if (cell.revealed) return;
+    if (cell.flagged) return;
+
+    // 首次点击：布雷 + 启动计时器
+    if (firstClick) {
+      firstClick = false;
+      gameStarted = true;
+      placeMines(r, c);
+      calcNumbers();
+      startTimer();
+    }
+
+    // 踩雷
+    if (cell.mine) {
+      gameOver = true;
+      cell.element.classList.add('mine-hit');
+      setSmiley('lose');
+      revealAllMines(r, c);
+      stopTimer();
+      return;
+    }
+
+    // 翻开格子
+    revealCell(r, c);
+
+    // 检查胜利
+    checkWin();
+  }
+
+  /* ======================== 右键点击 ======================== */
+  function handleRightClick(r, c) {
+    if (gameOver) return;
+    const cell = grid[r][c];
+    if (cell.revealed) return;
+
+    if (!cell.flagged) {
+      // 标记红旗
+      cell.flagged = true;
+      cell.element.textContent = '🚩';
+      cell.element.classList.add('flagged');
+      flagCount++;
+      updateMineCounter();
+    } else {
+      // 取消标记
+      cell.flagged = false;
+      cell.element.textContent = '';
+      cell.element.classList.remove('flagged');
+      flagCount--;
+      updateMineCounter();
+    }
+  }
+
+  /* ======================== 翻开格子（递归展开空白格） ======================== */
+  function revealCell(r, c) {
+    if (r < 0 || r >= rows || c < 0 || c >= cols) return;
+    const cell = grid[r][c];
+    if (cell.revealed) return;
+    if (cell.flagged) return;
+    if (cell.mine) return;
+
+    // 标记为已翻开
+    cell.revealed = true;
+    const el = cell.element;
+    el.classList.add('revealed');
+
+    if (cell.number > 0) {
+      // 数字格
+      el.textContent = cell.number;
+      el.classList.add('n' + cell.number);
+      return;
+    }
+
+    // 空白格（number === 0）：递归展开相邻格
+    // 空白格显示为空
+    for (const [dr, dc] of DIRS) {
+      revealCell(r + dr, c + dc);
+    }
+  }
+
+  /* ======================== 游戏结束：展示所有地雷 ======================== */
+  function revealAllMines(hitR, hitC) {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const cell = grid[r][c];
+        const el = cell.element;
+        if (cell.mine) {
+          if (r === hitR && c === hitC) continue; // 已经标红了
+          el.textContent = '💣';
+          el.classList.add('revealed');
+        } else if (cell.flagged) {
+          // 被标记但无雷 → 错误标记
+          el.textContent = '❌';
+          el.classList.add('revealed', 'mine-wrong');
+        }
+      }
+    }
+    // 禁用所有未翻开的点击（通过 gameOver 控制）
+  }
+
+  /* ======================== 检查胜利 ======================== */
+  function checkWin() {
+    let unrevealedSafe = 0;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const cell = grid[r][c];
+        if (!cell.mine && !cell.revealed) {
+          unrevealedSafe++;
+        }
+      }
+    }
+    if (unrevealedSafe === 0) {
+      // 胜利！
+      gameOver = true;
+      setSmiley('win');
+      stopTimer();
+      // 自动标记所有地雷
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          if (grid[r][c].mine && !grid[r][c].flagged) {
+            grid[r][c].flagged = true;
+            grid[r][c].element.textContent = '🚩';
+            grid[r][c].element.classList.add('flagged');
+            flagCount++;
+          }
+        }
+      }
+      updateMineCounter();
+    }
+  }
+
+  /* ======================== 重新开始游戏 ======================== */
+  function resetGame() {
+    stopTimer();
+    gameOver = false;
+    gameStarted = false;
+    firstClick = true;
+    flagCount = 0;
+    seconds = 0;
+    setSmiley('normal');
+    updateMineCounter();
+    updateTimer();
+
+    initGrid();
+
+    // 重新渲染棋盘时保持当前列宽自适应
+    renderBoard();
+    // 渲染后更新列宽（移动端）
+    adjustColumnWidth();
+  }
+
+  /* ======================== 切换难度 ======================== */
+  function setMode(mode) {
+    if (mode === currentMode && grid.length > 0) return;
+    currentMode = mode;
+    const cfg = MODES[mode];
+    rows = cfg.rows;
+    cols = cfg.cols;
+    totalMines = cfg.mines;
+
+    // 更新按钮状态
+    modeBtns.forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.mode === mode);
+    });
+
+    resetGame();
+  }
+
+  /* ======================== 自适应列宽 ======================== */
+  function adjustColumnWidth() {
+    const w = window.innerWidth;
+    let size = 28;
+    if (w < 500 && cols > 16) size = 24;
+    if (w < 380 && cols > 20) size = 20;
+    boardEl.style.gridTemplateColumns = `repeat(${cols}, ${size}px)`;
+  }
+
+  /* ======================== 事件绑定 ======================== */
+  // 表情按钮
+  smileyBtn.addEventListener('click', resetGame);
+
+  // 难度按钮
+  modeBtns.forEach(btn => {
+    btn.addEventListener('click', function() {
+      setMode(this.dataset.mode);
+    });
+  });
+
+  // 窗口大小变化时调整列宽
+  window.addEventListener('resize', adjustColumnWidth);
+
+  /* ======================== 启动游戏（默认初级） ======================== */
+  setMode('beginner');
+
+})();
+</script>
+</body>
+</html>

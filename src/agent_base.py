@@ -28,7 +28,7 @@ except Exception:
     _MODEL = None
     LLM_AVAILABLE = False
 
-from shared_context import BUS, TASK_MGR, API_SPEC, extract_text_from_response
+from .shared_context import BUS, TASK_MGR, API_SPEC, extract_text_from_response
 
 
 # ============================================================

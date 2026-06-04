@@ -34,7 +34,7 @@ env/
 .DS_Store
 
 # Project specific
-.project/
+examples/.project/
 .team/
 .transcripts/
 .tasks/

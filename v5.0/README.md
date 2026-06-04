@@ -1,0 +1,150 @@
+# Multi-Agent Team v5.0
+
+## 相比 v4.0 的核心升级
+
+| 维度 | v4.0 | v5.0 |
+|------|------|------|
+| **技术栈** | 硬编码 Python Flask + HTML/JS | **LLM 按需选择**：React/Vue/Flutter/Go/Java/Node.js 等任意组合 |
+| **团队构成** | 固定 4 个 Worker（backend/frontend/test/devops） | **LLM 按需组建**：需要几个角色就几个，名称自由（mobile/data/design/...） |
+| **Worker** | 4 个独立文件（backend_agent.py 等），各自写死 system prompt | **1 个通用文件**（src/worker_agent.py），通过 CLI 参数注入角色和技术栈 |
+| **启动方式** | 手动启动 5 个进程 | **Lead 自动孵化**：批准计划后自动创建 Worker 终端窗口 |
+| **灵活性** | 只能做 Python+HTML 的全栈 Web | **能做任何项目**：移动 App、纯 API 微服务、数据管道、CLI 工具... |
+
+## 文件结构
+
+```
+v5.0/
+├── src/
+│   ├── agent_base.py        # BaseAgent v5.0（ReAct 循环 + 通用工具 + run_command 自验证）
+│   ├── shared_context.py    # 消息总线 + 任务管理器（expectedFiles 自动验证）
+│   ├── lead_agent.py        # Lead Agent v5.0（动态技术栈 + Worker 孵化 + 产出验收）
+│   ├── worker_agent.py      # 通用 Worker Agent（动态角色 + 动态技术栈 + 自验证流程）
+│   ├── send_requirement.py  # 需求发送工具
+│   └── __init__.py          # 包初始化
+├── run_team.bat             # Windows 启动脚本
+├── run_team.sh              # Linux/macOS 启动脚本
+├── README.md                # 本文件
+├── 更新说明.md               # 版本更新说明
+└── 测试验证指南.md            # Agent 产出质量保证指南
+```
+
+## 快速开始
+
+### 1. 启动 Lead Agent
+```bash
+# Windows
+run_team.bat
+
+# Linux/macOS
+bash run_team.sh
+```
+
+### 2. 输入需求
+在 Lead Agent 窗口中输入任意技术栈的项目需求：
+```
+做一个 React + Go Gin 的博客系统
+做一个 Flutter 跨平台日记 App，后端用 FastAPI
+做一个纯后端的用户认证微服务，用 Node.js Express + JWT
+```
+
+### 3. 审查计划
+Lead Agent 会展示：
+- 推荐的技术栈和理由
+- 需要的团队角色
+- 任务拆分和依赖关系
+
+输入 `y` 批准执行。
+
+### 4. 自动执行
+批准后，Lead 自动：
+1. 创建任务并设置依赖关系
+2. 为每个角色孵化一个 Worker 进程（新终端窗口）
+3. 分发就绪任务给对应 Worker
+
+## 工作流程（相比 v4.0）
+
+```
+v4.0 流程:
+  启动 5 个进程 → 输入需求 → Lead 用固定模板分析 → 分发给固定 Worker
+                                    ↑ 只有 1 种可能
+
+v5.0 流程:
+  启动 Lead → 输入需求 → Lead 自主分析 → 按需孵化 Worker
+                ↑ LLM 自主决定：        ↑ 自动创建进程
+                  - 用什么技术栈?
+                  - 需要哪些角色?
+                  - 如何拆分任务?
+```
+
+## 架构图
+
+```
+                         用户输入需求
+                              │
+                              ▼
+┌──────────────────────────────────────────────────────────┐
+│                  Lead Agent v5.0                          │
+│                                                          │
+│  Phase 1: LLM 规划                                       │
+│  ├─ 分析需求 → 选择技术栈（自由选择）                      │
+│  ├─ 确定角色（按需组建，几个都行）                         │
+│  └─ submit_plan → 等待审查                               │
+│                                                          │
+│  Phase 2: 人工审查                                       │
+│  └─ y/n/m 确认                                          │
+│                                                          │
+│  Phase 3: 执行 + 孵化                                    │
+│  ├─ 创建任务 + 依赖关系                                   │
+│  ├─ ═══ 自动孵化 Worker ═══                             │
+│  │   python -m src.worker_agent --name backend --tech "..."│
+│  │   python -m src.worker_agent --name mobile --tech "..."│
+│  │   python -m src.worker_agent --name test --tech "..."  │
+│  └─ 分发就绪任务                                         │
+└──────────────────────────────────────────────────────────┘
+        │                    │                    │
+        ▼                    ▼                    ▼
+┌───────────────┐  ┌───────────────┐  ┌───────────────┐
+│  Worker       │  │  Worker       │  │  Worker       │
+│  (backend)    │  │  (mobile)     │  │  (test)       │
+│               │  │               │  │               │
+│ 动态 System   │  │ 动态 System   │  │ 动态 System   │
+│ Prompt:       │  │ Prompt:       │  │ Prompt:       │
+│ "Node.js      │  │ "Flutter      │  │ "测试工程师"   │
+│  Express      │  │ 跨平台开发"    │  │               │
+│  后端开发"     │  │               │  │               │
+└───────────────┘  └───────────────┘  └───────────────┘
+```
+
+## 三层产出验证体系
+
+每个 Agent 的产出经过三道防线保证质量：
+
+```
+   防线一 (Worker自查)       防线二 (Lead自动验收)      防线三 (人工抽查)
+┌─────────┴─────────┐    ┌─────────┴─────────┐     ┌───────┴───────┐
+│ run_command 编译/测试│    │ expectedFiles     │     │ Phase 2 审查    │
+│ list_directory 确认  │ → │ 自动文件存在检查   │ →   │ 手动运行查看    │
+│ 修复 → 重验证       │    │ 缺失文件告警      │     │ 抽查关键文件    │
+└───────────────────┘    └───────────────────┘     └───────────────┘
+```
+
+### 新增工具
+| 工具 | 所属 | 用途 |
+|------|------|------|
+| `run_command` | Worker | 执行编译/测试/lint 命令进行自验证 |
+| `expectedFiles` 验证 | Lead | 自动检查 Worker 的承诺产出文件是否已创建 |
+| 审查阶段 y/n/m | 用户 | 批准/拒绝/修改计划 |
+
+### 详细的验证策略请参阅 [测试验证指南.md](./测试验证指南.md)
+
+## Worker Agent CLI
+
+如果需要手动启动 Worker（调试场景）：
+```bash
+python -m src.worker_agent --name backend --tech "Node.js Express + SQLite 后端开发"
+python -m src.worker_agent --name frontend --tech "Vue 3 + TypeScript 前端开发"
+python -m src.worker_agent --name mobile --tech "Flutter 跨平台移动端开发"
+python -m src.worker_agent --name test --tech "测试工程师，Python unittest"
+python -m src.worker_agent --name devops --tech "文档工程师，编写 README"
+python -m src.worker_agent --name design --tech "UI/UX 设计师，设计规范文档"
+```

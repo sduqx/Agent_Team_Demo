@@ -6,7 +6,7 @@
   2. 在 Lead Agent 窗口直接输入需求（推荐）
 """
 
-from shared_context import BUS
+from .shared_context import BUS
 
 if __name__ == "__main__":
     print("=" * 70)

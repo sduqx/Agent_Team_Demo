@@ -8,27 +8,27 @@ echo ""
 
 # 启动Lead Agent
 echo "✓ 正在启动 Lead Agent (主控)..."
-python lead_agent.py &
+python -m src.lead_agent &
 sleep 2
 
 # 启动Backend Agent
 echo "✓ 正在启动 Backend Agent (后端开发)..."
-python backend_agent.py &
+python -m src.backend_agent &
 sleep 1
 
 # 启动Frontend Agent
 echo "✓ 正在启动 Frontend Agent (前端开发)..."
-python frontend_agent.py &
+python -m src.frontend_agent &
 sleep 1
 
 # 启动Test Agent
 echo "✓ 正在启动 Test Agent (测试)..."
-python test_agent.py &
+python -m src.test_agent &
 sleep 1
 
 # 启动DevOps Agent
 echo "✓ 正在启动 DevOps Agent (部署)..."
-python devops_agent.py &
+python -m src.devops_agent &
 
 echo ""
 echo "========================================================================"

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Lead Agent v5.0 — 三阶段流程 (规划 → 审查 → 执行)
+Lead Agent v4.0 — 三阶段流程 (规划 → 审查 → 执行)
 核心改进：
   1. 规划阶段：LLM 分析需求 → submit_plan → 等待审查（不直接创建任务）
   2. 审查阶段：展示计划 → 人工批准/拒绝/修改 → 确保任务编排合理
@@ -11,8 +11,8 @@ Lead Agent v5.0 — 三阶段流程 (规划 → 审查 → 执行)
 import sys
 import time
 import json
-from agent_base import BaseAgent, LLM_AVAILABLE
-from shared_context import TASK_MGR, BUS
+from .agent_base import BaseAgent, LLM_AVAILABLE
+from .shared_context import TASK_MGR, BUS
 
 
 class LeadAgent(BaseAgent):

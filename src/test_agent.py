@@ -5,8 +5,8 @@ Test Agent v4.0 — 纯 ReAct + 基础工具，无内嵌 LLM 调用
 """
 
 import sys
-from agent_base import BaseAgent, LLM_AVAILABLE
-from shared_context import BUS
+from .agent_base import BaseAgent, LLM_AVAILABLE
+from .shared_context import BUS
 
 
 class TestAgent(BaseAgent):
