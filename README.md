@@ -2,17 +2,25 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-> **本文档是快速启动指南。**  
-> 📘 详细项目介绍与架构设计 → [`doc/Agent_team_demo.md`](doc/Agent_team_demo.md)  
-> 📋 开发过程与作业报告 → [`doc/报告.md`](doc/报告.md)
+> **本文档是项目总入口和快速启动指南。**  
+> 📘 完整项目介绍与架构演进 → [`docs/architecture.md`](docs/architecture.md)  
+> 📋 开发过程与作业报告 → [`docs/report.md`](docs/report.md)  
+> 🤖 AI 工具使用详情 → [`docs/ai-usage-log.md`](docs/ai-usage-log.md)
+
+---
 
 ## 📋 项目概述
 
-一个基于 LLM 的**多智能体协作开发系统**，模拟真实软件开发团队：5 个不同角色的 Agent（Lead、Backend、Frontend、Test、DevOps）通过消息总线异步通信，自动完成从需求分析到代码生成的全栈开发流程。
+一个基于 LLM 的**多智能体协作开发系统**，模拟真实软件开发团队：多个不同角色的 Agent（Lead + 动态 Worker）通过消息总线异步通信，自动完成从需求分析到代码生成的全栈开发流程。
+
+**当前版本：v5.0 — 通用多 Agent 协作框架**，核心技术栈不受限制，LLM 自主选择任何语言/框架组合。
 
 ### 🎯 核心特性
 
-- **5 个独立 Agent 进程**，每个 Agent 在 ReAct 循环中自主决策
+- **通用 Worker Agent**：1 个文件替代 N 个固定角色，通过 CLI 参数动态注入技术栈
+- **不限技术栈**（v5.0）：LLM 自主选择 React/Vue/Flutter/Go/Java/Node.js 等任意组合
+- **Lead 自动孵化 Worker**：计划批准后自动创建终端窗口运行 Worker 进程
+- **三层产出验证**：Worker 自验证 → Lead 自动验收 → 人工审查
 - **三阶段工作流**：LLM 规划 → 人工审查 → 程序化执行
 - **`ask_user` 人类介入**：Agent 遇模糊需求时自动暂停，等待用户决策
 - **Anthropic 原生 Tool-Use**：结构化工具调用，比文本解析式 ReAct 更可靠
@@ -20,42 +28,7 @@
 - **任务依赖图**：DAG 管理，支持级联解锁，保证执行顺序
 - **文件系统通信**：JSONL 消息总线，无需外部消息队列
 
-## 🏗️ 工作流
-
-```
-用户输入需求
-    │
-    ▼
-┌─ Phase 1：LLM 规划 ───────────────────┐
-│  Lead Agent 分析需求 → ask_user 确认   │
-│  → submit_plan 提交结构化任务计划      │
-└──────────────┬────────────────────────┘
-               ▼
-┌─ Phase 2：人工审查 ───────────────────┐
-│  展示计划（角色/主题/依赖）            │
-│  y=批准 / n=拒绝 / m=修改后重新规划     │
-└──────────────┬────────────────────────┘
-               ▼
-┌─ Phase 3：程序化执行（无 LLM）─────────┐
-│  创建任务 → 设置依赖 → 分发就绪任务     │
-│  事件循环监控 → 级联解锁 → 汇总输出     │
-└──────────────────────────────────────┘
-               │
-    ┌──────────┼──────────┬──────────┐
-    ▼          ▼          ▼          ▼
- Backend    Frontend    Test      DevOps
-  Agent      Agent      Agent      Agent
- (ReAct)    (ReAct)    (ReAct)    (ReAct)
-```
-
-### 任务依赖规则
-
-```
-backend（无依赖，最先执行 → 产出 api_spec.json）
-   ├── frontend（依赖 backend）
-   ├── test（依赖 backend）
-   └── devops（依赖 frontend + test 都完成）
-```
+---
 
 ## 🚀 快速开始
 
@@ -90,87 +63,130 @@ MODEL_ID=deepseek-v4-flash
 
 ### 3. 启动 Team
 
-Windows 双击 `run_team.bat` 或：
-
-```powershell
-.\run_team.bat
-```
-
-Linux/Mac：
+#### v5.0（推荐 — 通用框架）
 
 ```bash
-chmod +x run_team.sh && ./run_team.sh
+cd v5.0
+
+# Windows
+.\run_team.bat
+
+# Linux/Mac
+bash run_team.sh
 ```
+
+只启动 Lead Agent，Worker 由 Lead 自动孵化。
+
+#### v4.0（经典 — 固定 Python Flask 技术栈）
+
+```bash
+# Windows
+.\run_team.bat
+
+# Linux/Mac
+bash run_team.sh
+```
+
+手动启动 5 个 Agent 进程。
 
 ### 4. 提交需求
 
-启动后在 **Lead Agent** 窗口直接输入需求，例如：
-
-```
-帮我构建一个用户管理系统，支持增删改查
-```
-
-或通过 `send_requirement.py` 提交：
+启动后在 **Lead Agent** 窗口直接输入需求：
 
 ```bash
-python send_requirement.py
+# v5.0 — 支持任意技术栈
+做一个 React + Go Gin 的博客系统
+做一个 Flutter 跨平台日记 App，后端用 FastAPI
+
+# v4.0 — Python Flask + HTML 全栈
+帮我构建一个用户管理系统，支持增删改查
 ```
 
 系统会自动完成：需求分析 → 人工审查任务计划 → Worker Agent 协作开发 → 代码生成。
 
-生成的项目代码保存在 `.project/` 目录中。
+---
 
 ## 📁 项目结构
 
 ```
 Agent_Team_Demo/
-├── agent_base.py           # Agent 基类（ReAct 循环 + Tool 注册 + LLM 调用）
-├── lead_agent.py           # Lead 主控 Agent（三阶段工作流）
-├── backend_agent.py        # Backend 开发 Agent
-├── frontend_agent.py       # Frontend 开发 Agent
-├── test_agent.py           # Test 测试 Agent
-├── devops_agent.py         # DevOps/文档 Agent
-├── shared_context.py       # 共享通信模块（消息总线 + 任务管理器）
-├── send_requirement.py     # 需求提交脚本
-├── self_cc.py              # 单 Agent 参考实现
-├── run_team.bat / .sh      # 启动脚本
-├── requirements.txt        # Python 依赖
-├── .env                    # LLM 配置（需自行创建）
-├── doc/                    # 📘 文档目录
-│   ├── Agent_team_demo.md  # 详细项目介绍（架构、迭代演进）
-│   └── 报告.md              # 开发过程与作业报告
-└── .project/               # 生成的项目代码（运行后创建）
+├── src/                         # v4.0 代码（固定 5 角色 Agent）
+│   ├── agent_base.py            # BaseAgent（ReAct 循环 + Tool 注册 + LLM 调用）
+│   ├── lead_agent.py            # Lead 主控 Agent（三阶段工作流）
+│   ├── backend_agent.py         # Backend 开发 Agent（Flask）
+│   ├── frontend_agent.py        # Frontend 开发 Agent（HTML/JS）
+│   ├── test_agent.py            # Test 测试 Agent（unittest）
+│   ├── devops_agent.py          # DevOps 文档 Agent
+│   └── shared_context.py        # 共享通信模块（消息总线 + 任务管理器）
+│
+├── v5.0/                        # v5.0 代码（通用框架）
+│   ├── src/
+│   │   ├── agent_base.py        # BaseAgent v2.0（8 工具 + run_command）
+│   │   ├── shared_context.py    # 消息总线 + expectedFiles 验证
+│   │   ├── lead_agent.py        # Lead Agent v2.0（动态技术栈 + Worker 孵化）
+│   │   ├── worker_agent.py      # 🌟 通用 Worker Agent（唯一通用文件）
+│   │   └── send_requirement.py  # 需求发送工具
+│   ├── run_team.bat / .sh       # 启动脚本
+│   ├── README.md                # v5.0 说明
+│   └── 更新说明.md / 测试验证指南.md
+│
+├── docs/                        # 📘 统一文档目录
+│   ├── architecture.md          # 完整项目介绍（五次迭代演进）
+│   ├── report.md                # 开发过程与作业报告
+│   ├── agent-design.md          # Agent System Prompt 设计（v4.0 + v5.0）
+│   ├── ai-usage-log.md          # AI 工具使用详细记录
+│   ├── v5.0-overview.md         # v5.0 快速入门
+│   ├── v5.0-changelog.md        # v5.0 版本更新说明
+│   ├── v5.0-verification.md     # 三层验证体系详细文档
+│   └── img/                     # 文档截图
+│
+├── run_team.bat / .sh           # v4.0 启动脚本
+├── send_requirement.py          # v4.0 需求提交脚本
+├── requirements.txt             # Python 依赖
+└── .env                         # LLM 配置（需自行创建）
 ```
 
-## 🔧 Agent 角色
+## 🔧 v4.0 vs v5.0 对比
 
-| Agent | 角色 | 产出 | 专属工具 |
-|-------|------|------|----------|
-| **Lead** | 主编排者 | 需求分析 → 人工审查 → 任务分发 → 监控 | `submit_plan`、`ask_user` |
-| **Backend** | 后端工程师 | `api_spec.json`、`app.py`（Flask）、`requirements.txt` | 全部 7 个通用工具 |
-| **Frontend** | 前端工程师 | `index.html`（内嵌 CSS + JS 单页应用） | 全部 7 个通用工具 |
-| **Test** | 测试工程师 | `tests/test_api.py`（unittest） | 全部 7 个通用工具 |
-| **DevOps** | 文档工程师 | `README.md`（项目文档） | 全部 7 个通用工具 |
+| 维度 | v4.0 | v5.0 |
+|------|------|------|
+| **技术栈** | 固定 Python Flask + HTML/JS | **任意语言/框架** |
+| **Worker 数量** | 4 个固定角色 | **LLM 按需决定** |
+| **Worker 文件** | 4 个独立 `.py` 文件 | **1 个通用文件** |
+| **新增角色** | 需写新 Agent 文件 | **只需新 CLI 参数** |
+| **启动方式** | 手动启动 5 个进程 | **只启 Lead，自动孵化** |
+| **质量验证** | 无 | **三层防线** |
+| **max_rounds** | 6~15 | **50**（自验证需求） |
+| **适用场景** | Python Web 全栈 | **任何软件项目** |
 
-每个 Worker Agent 均继承 `BaseAgent`，共享 ReAct 循环和 7 个通用工具：`write_file`、`read_file`、`list_directory`、`send_message`、`read_inbox`、`ask_user`、`finish_task`。
+---
 
 ## 🎯 使用示例
 
-启动后，在 Lead Agent 窗口输入：
+### v5.0 示例
 
+```bash
+cd v5.0 && .\run_team.bat
+# 输入：做一个 React + Go Gin 的待办事项管理系统
+# Lead 分析 → 推荐技术栈 → 人工审查(y) → 自动孵化 3 个 Worker → 协作完成
 ```
-构建一个TODO应用，支持增删改查任务
+
+### v4.0 示例
+
+```bash
+.\run_team.bat
+# 输入：构建一个TODO应用，支持增删改查任务
+# Lead 分析 → 人工审查(y) → Backend/Frontend/Test/DevOps 协作开发
 ```
 
 流程：
 1. Lead Agent 分析需求 → 确认模糊点 → 提交任务计划
 2. 人工审查：展示计划 → 批准（y）
 3. 程序化执行：
-   - Backend Agent 创建 Flask REST API + `api_spec.json`
-   - Frontend Agent 基于 API 规范创建 HTML 界面
-   - Test Agent 创建 unittest 测试用例
-   - DevOps Agent 创建项目文档
-4. 所有代码输出到 `.project/`
+   - Worker Agent 根据角色生成代码
+   - 所有代码输出到 `.project/`
+
+---
 
 ## ⚠️ 常见问题
 
@@ -180,7 +196,11 @@ Agent_Team_Demo/
 
 ### Worker 无响应
 
-确认 `run_team.bat` 启动时所有窗口正常打开，检查 `.team/inbox/` 中的消息日志。
+确认启动脚本正常打开了所有 Agent 窗口，检查 `.team/inbox/` 中的消息日志。
+
+### v5.0 Worker 没有自验证
+
+检查 Worker 窗口日志是否调用了 `run_command`，确保 System Prompt 中包含验证要求。
 
 ### Python 版本问题
 
@@ -188,12 +208,21 @@ Agent_Team_Demo/
 python --version  # 确认 Python 3.8+
 ```
 
-## 📚 详细文档
+---
+
+## 📚 文档导航
 
 | 文档 | 内容 |
 |------|------|
-| [`doc/Agent_team_demo.md`](doc/Agent_team_demo.md) | 完整项目介绍：四次迭代演进、架构总览、通信机制、Agent 详解、关键设计决策 |
-| [`doc/报告.md`](doc/报告.md) | 开发过程记录：基于 paperclip 的初步探索 → 自主开发 Agent Team 的全过程 |
+| [`docs/architecture.md`](docs/architecture.md) | 🏗️ 完整项目介绍：五次迭代演进、架构总览、通信机制、关键设计决策 |
+| [`docs/report.md`](docs/report.md) | 📋 开发过程记录：paperclip 探索 → v1.0~v5.0 开发全过程 |
+| [`docs/agent-design.md`](docs/agent-design.md) | 🧠 Agent System Prompt 设计文档（v4.0 固定角色 + v5.0 通用 Worker） |
+| [`docs/ai-usage-log.md`](docs/ai-usage-log.md) | 🤖 AI 工具使用详细记录：关键 Prompt、对话片段、反思总结 |
+| [`docs/v5.0-overview.md`](docs/v5.0-overview.md) | 🚀 v5.0 快速入门（动态技术栈 + 自动孵化 + 三层验证） |
+| [`docs/v5.0-changelog.md`](docs/v5.0-changelog.md) | 📝 v5.0 版本更新说明（完整的架构重构记录） |
+| [`docs/v5.0-verification.md`](docs/v5.0-verification.md) | ✅ 三层产出验证体系：Worker 自验证 → Lead 验收 → 人工审查 |
+
+---
 
 ## 🤝 贡献
 
@@ -205,4 +234,4 @@ MIT License
 
 ---
 
-**版本**: v4.0 | **最后更新**: 2026-06-03
+**当前版本**: v5.0 | **最后更新**: 2026-06-04
